@@ -3,6 +3,8 @@ Anyone can VIEW. Only people with the password can add players / enter results.
 Data lives in squash_data.json inside a separate private GitHub repo, so it survives restarts.
 """
 import base64
+import html
+import io
 import json
 from datetime import datetime
 
@@ -10,6 +12,7 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 START_RATING, K_FACTOR = 1000, 32
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
@@ -44,11 +47,47 @@ def valid_game(a, b):
     return (hi == 11 and lo <= 9) or (hi > 11 and hi - lo == 2)
 
 
+# ---------- photos ----------
+def make_photo(raw):
+    """Crop to a centred square, shrink to 200x200 and return a small base64 JPEG data URI."""
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    img = ImageOps.fit(img, (200, 200))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=80)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@st.cache_data
+def default_avatar(name):
+    """Coloured square with the player's initials, used when there's no photo."""
+    colors = ["#e76f51", "#2a9d8f", "#e9a23b", "#457b9d", "#8e6bbf", "#d66ba0", "#6a994e"]
+    img = Image.new("RGB", (200, 200), colors[sum(map(ord, name)) % len(colors)])
+    initials = "".join(w[0] for w in name.split()[:2]).upper() or "?"
+    d = ImageDraw.Draw(img)
+    try:
+        d.text((100, 100), initials, fill="white", font=ImageFont.load_default(size=90), anchor="mm")
+    except Exception:
+        d.text((90, 95), initials, fill="white")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def avatar(name):
+    return photos.get(name) or default_avatar(name)
+
+
+def round_img(name, size=90):
+    return (f'<img src="{avatar(name)}" style="width:{size}px;height:{size}px;'
+            f'border-radius:50%;object-fit:cover;">')
+
+
 # ---------- page ----------
 st.set_page_config(page_title="Squash Elo", page_icon="🎾")
 st.title("Squash Elo")
 data, sha = load()
 players, matches = data["players"], data["matches"]
+photos = data.setdefault("photos", {})
 authed = st.session_state.get("auth", False)
 
 with st.expander("Logged in ✅" if authed else "Login (needed to edit)"):
@@ -89,11 +128,12 @@ if page == "Leaderboard":
         loser = m["p2"] if m["winner"] == m["p1"] else m["p1"]
         stats[m["winner"]][0] += 1
         stats[loser][1] += 1
-    rows = [{"Rank": i, "Player": p, "Rating": round(players[p]), "Played": sum(stats[p]),
+    rows = [{"Rank": i, "Photo": avatar(p), "Player": p, "Rating": round(players[p]), "Played": sum(stats[p]),
              "W": stats[p][0], "L": stats[p][1]}
             for i, p in enumerate(sorted(players, key=lambda x: -players[x]), 1)]
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, row_height=48,
+                     column_config={"Photo": st.column_config.ImageColumn("Photo")})
     else:
         st.info("No players yet.")
     if authed:
@@ -108,6 +148,19 @@ if page == "Leaderboard":
                     save(data, sha, f"Add player {name}")
                     st.session_state.flash = f"Added {name}"
                     st.rerun()
+        if players:
+            with st.form("photo", clear_on_submit=True):
+                st.write("Add or change a player's photo")
+                who = st.selectbox("Player", sorted(players))
+                up = st.file_uploader("Photo", type=["jpg", "jpeg", "png"])
+                if st.form_submit_button("Save photo"):
+                    if up is None:
+                        st.error("Choose a photo first.")
+                    else:
+                        photos[who] = make_photo(up.getvalue())
+                        save(data, sha, f"Photo for {who}")
+                        st.session_state.flash = f"Photo saved for {who}"
+                        st.rerun()
 
 # ----- enter match -----
 elif page == "Enter Match":
@@ -175,6 +228,9 @@ elif page == "Player History":
                          "Result": "Win" if m["winner"] == name else "Loss",
                          "Score": f"{a}-{b}" if me == "p1" else f"{b}-{a}",
                          "Rating": f"{before:.0f} → {after:.0f}", "Change": f"{after - before:+.1f}"})
+        st.markdown(f'<div style="display:flex;align-items:center;gap:14px;margin:8px 0">{round_img(name, 90)}'
+                    f'<span style="font-size:1.6rem;font-weight:600">{html.escape(name)}</span></div>',
+                    unsafe_allow_html=True)
         st.metric("Current rating", round(ratings[-1]))
         # Fixed chart: no .interactive(), so it can't be dragged or zoomed. It stretches to fit the page
         # and the axes automatically rescale to fit every match.
@@ -199,6 +255,8 @@ else:
         c1, c2 = st.columns(2)
         A = c1.selectbox("Player 1", names, key="h2h_a")
         B = c2.selectbox("Player 2", names, index=1, key="h2h_b")
+        c1.markdown(round_img(A, 80), unsafe_allow_html=True)
+        c2.markdown(round_img(B, 80), unsafe_allow_html=True)
         if A == B:
             st.info("Pick two different players.")
         else:
