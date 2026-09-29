@@ -68,7 +68,17 @@ with st.expander("Logged in ✅" if authed else "Login (needed to edit)"):
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
 
-# A keyed radio (instead of st.tabs) so the page you're on is remembered when anything changes.
+# Streamlit's built-in st.tabs jump back to the first tab on reruns, so these tabs are a keyed radio
+# (which remembers the selection) styled with CSS to look like normal tabs.
+st.markdown("""
+<style>
+.st-key-page div[role="radiogroup"] { gap: 0; flex-wrap: wrap; border-bottom: 1px solid rgba(128,128,128,0.35); }
+.st-key-page div[role="radiogroup"] label { padding: 8px 14px; margin: 0; cursor: pointer; border-bottom: 2px solid transparent; }
+.st-key-page div[role="radiogroup"] label > div:first-child { display: none; }
+.st-key-page div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #ff4b4b; }
+.st-key-page div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
+</style>
+""", unsafe_allow_html=True)
 page = st.radio("Page", ["Leaderboard", "Enter Match", "Match History", "Player History", "Head to Head"],
                 horizontal=True, key="page", label_visibility="collapsed")
 
