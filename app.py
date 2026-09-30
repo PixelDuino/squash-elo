@@ -3,6 +3,7 @@ Anyone can VIEW. Only people with the password can add players / enter, edit or 
 Data lives in squash_data.json inside a separate private GitHub repo, so it survives restarts.
 """
 import base64
+import html
 import json
 from datetime import datetime
 
@@ -54,6 +55,23 @@ def recompute(players, matches):
         n1, n2 = elo(r1, r2, 1 if a > b else 0)
         m.update(p1_before=r1, p1_after=n1, p2_before=r2, p2_after=n2, winner=m["p1"] if a > b else m["p2"])
         players[m["p1"]], players[m["p2"]] = n1, n2
+
+
+def compare_table(a, b, rows):
+    """Side-by-side comparison: names on top, stat label in the middle, each player's number on their side.
+    rows = [(label, (shown_a, number_a), (shown_b, number_b)), ...]. The higher number is highlighted."""
+    line = "border-top:1px solid rgba(128,128,128,0.25);padding:8px 4px;"
+    name_css = "font-weight:700;font-size:1.15rem;padding-bottom:8px;"
+    out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;text-align:center;">',
+           f'<div style="{name_css}">{html.escape(a)}</div><div></div>',
+           f'<div style="{name_css}">{html.escape(b)}</div>']
+    for label, (sa, na), (sb, nb) in rows:
+        win = "font-weight:700;color:#2a9d8f;"
+        out.append(f'<div style="{line}font-size:1.5rem;{win if na > nb else ""}">{sa}</div>'
+                   f'<div style="{line}font-size:0.85rem;opacity:0.7;padding:8px 14px;">{html.escape(label)}</div>'
+                   f'<div style="{line}font-size:1.5rem;{win if nb > na else ""}">{sb}</div>')
+    out.append("</div>")
+    st.markdown("".join(out), unsafe_allow_html=True)
 
 
 # ---------- page ----------
@@ -247,12 +265,12 @@ else:
                     pts[name] += s[name]
                     pts[opp] += s[opp]
                     rows.append({"Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
-                pct = {k: f"{100 * wins[k] / n:.0f}%" for k in wins}
-                for title, vals in (("Matches won", wins), ("Points won", pts), ("Win %", pct)):
-                    st.markdown(f"**{title}**")
-                    x1, x2 = st.columns(2)
-                    x1.metric(name, vals[name])
-                    x2.metric(opp, vals[opp])
+                compare_table(name, opp, [
+                    ("Rating", (f"{players[name]:.0f}", players[name]), (f"{players[opp]:.0f}", players[opp])),
+                    ("Matches won", (wins[name], wins[name]), (wins[opp], wins[opp])),
+                    ("Points won", (pts[name], pts[name]), (pts[opp], pts[opp])),
+                    ("Win %", (f"{100 * wins[name] / n:.0f}%", wins[name]), (f"{100 * wins[opp] / n:.0f}%", wins[opp])),
+                ])
                 st.markdown(f"**Matches played together ({n})**")
                 st.dataframe(pd.DataFrame(rows[::-1]), hide_index=True)
 
