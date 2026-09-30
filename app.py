@@ -1,5 +1,5 @@
 """Squash Elo - web version (Streamlit).
-Anyone can VIEW. Only people with the password can add players / enter results.
+Anyone can VIEW. Only people with the password can add players / enter, edit or delete results.
 Data lives in squash_data.json inside a separate private GitHub repo, so it survives restarts.
 """
 import base64
@@ -44,6 +44,18 @@ def valid_game(a, b):
     return (hi == 11 and lo <= 9) or (hi > 11 and hi - lo == 2)
 
 
+def recompute(players, matches):
+    """Replay every match in order from the starting rating. Used after editing or deleting a match."""
+    for p in players:
+        players[p] = START_RATING
+    for m in matches:
+        a, b = m["score"]
+        r1, r2 = players[m["p1"]], players[m["p2"]]
+        n1, n2 = elo(r1, r2, 1 if a > b else 0)
+        m.update(p1_before=r1, p1_after=n1, p2_before=r2, p2_after=n2, winner=m["p1"] if a > b else m["p2"])
+        players[m["p1"]], players[m["p2"]] = n1, n2
+
+
 # ---------- page ----------
 st.set_page_config(page_title="Squash Elo", page_icon="🎾")
 st.title("Squash Elo")
@@ -79,7 +91,7 @@ st.markdown("""
 .st-key-page div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
-page = st.radio("Page", ["Leaderboard", "Enter Match", "Match History", "Player History", "Head to Head"],
+page = st.radio("Page", ["Leaderboard", "Enter Match", "Match History", "Player History"],
                 horizontal=True, key="page", label_visibility="collapsed")
 
 # ----- leaderboard -----
@@ -90,10 +102,12 @@ if page == "Leaderboard":
         stats[m["winner"]][0] += 1
         stats[loser][1] += 1
     rows = [{"Rank": i, "Player": p, "Rating": round(players[p]), "Played": sum(stats[p]),
-             "W": stats[p][0], "L": stats[p][1]}
+             "W": stats[p][0], "L": stats[p][1],
+             "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
             for i, p in enumerate(sorted(players, key=lambda x: -players[x]), 1)]
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True,
+                     column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
     else:
         st.info("No players yet.")
     if authed:
@@ -150,17 +164,45 @@ elif page == "Match History":
             {"Date": m["date"], "Player 1": m["p1"], "Player 2": m["p2"],
              "Score": f'{m["score"][0]}-{m["score"][1]}', "Winner": m["winner"]}
             for m in reversed(matches)]), hide_index=True)
-        if authed and st.checkbox("Enable undo") and st.button("Undo last match"):
-            m = matches.pop()
-            players[m["p1"]], players[m["p2"]] = m["p1_before"], m["p2_before"]
-            save(data, sha, f"Undo {m['p1']} vs {m['p2']}")
-            st.session_state.flash = "Last match removed"
-            st.rerun()
+
+        if authed:
+            st.subheader("Edit or delete a match")
+            st.caption("Ratings for every later match are recalculated automatically.")
+            order = list(range(len(matches) - 1, -1, -1))  # newest first
+            i = st.selectbox(
+                "Match", order, key="edit_idx",
+                format_func=lambda k: f'{matches[k]["date"]}  |  {matches[k]["p1"]} '
+                                      f'{matches[k]["score"][0]}-{matches[k]["score"][1]} {matches[k]["p2"]}')
+            m = matches[i]
+            names = sorted(players)
+            with st.form(f"edit_{i}"):
+                c1, c2 = st.columns(2)
+                e1 = c1.selectbox("Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
+                e2 = c2.selectbox("Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
+                s1 = c1.number_input("Player 1 score", 0, 99, m["score"][0], step=1, key=f"s1_{i}")
+                s2 = c2.number_input("Player 2 score", 0, 99, m["score"][1], step=1, key=f"s2_{i}")
+                if st.form_submit_button("Save changes"):
+                    if e1 == e2:
+                        st.error("Pick two different players.")
+                    elif not valid_game(s1, s2):
+                        st.error(f"{s1}-{s2} isn't valid. Games go to 11, win by 2 (e.g. 11-9, 12-10, 15-13).")
+                    else:
+                        m.update(p1=e1, p2=e2, score=[s1, s2])
+                        recompute(players, matches)
+                        save(data, sha, f"Edit match: {e1} {s1}-{s2} {e2}")
+                        st.session_state.flash = "Match updated and ratings recalculated."
+                        st.rerun()
+            if st.checkbox("I want to delete this match", key=f"del_ok_{i}") and st.button("Delete match"):
+                matches.pop(i)
+                recompute(players, matches)
+                save(data, sha, "Delete match")
+                st.session_state.flash = "Match deleted and ratings recalculated."
+                st.rerun()
     else:
         st.info("No matches yet.")
 
-# ----- player history -----
-elif page == "Player History":
+# ----- player history (with head to head) -----
+else:
     if players:
         name = st.selectbox("Player", sorted(players), key="hist_player")
         ratings, hist = [START_RATING], []
@@ -185,41 +227,37 @@ elif page == "Player History":
                          tooltip=["Match:Q", alt.Tooltip("Rating:Q", format=".0f")])
                  .properties(width="container", height=300))
         st.altair_chart(chart)
-        if hist:
-            st.dataframe(pd.DataFrame(hist[::-1]), hide_index=True)
-    else:
-        st.info("No players yet.")
 
-# ----- head to head -----
-else:
-    if len(players) < 2:
-        st.info("Add at least two players first.")
-    else:
-        names = sorted(players)
-        c1, c2 = st.columns(2)
-        A = c1.selectbox("Player 1", names, key="h2h_a")
-        B = c2.selectbox("Player 2", names, index=1, key="h2h_b")
-        if A == B:
-            st.info("Pick two different players.")
+        # ----- head to head, right under the graph -----
+        st.subheader("Head to head")
+        others = [p for p in sorted(players) if p != name]
+        if not others:
+            st.info("Add another player to see head to head stats.")
         else:
-            h2h = [m for m in matches if {m["p1"], m["p2"]} == {A, B}]
+            opp = st.selectbox("Versus", others, key="hist_opp")
+            h2h = [m for m in matches if {m["p1"], m["p2"]} == {name, opp}]
             if not h2h:
-                st.info(f"{A} and {B} haven't played each other yet.")
+                st.info(f"{name} and {opp} haven't played each other yet.")
             else:
-                wins, pts, rows = {A: 0, B: 0}, {A: 0, B: 0}, []
+                n = len(h2h)
+                wins, pts, rows = {name: 0, opp: 0}, {name: 0, opp: 0}, []
                 for m in h2h:
                     s = dict(zip((m["p1"], m["p2"]), m["score"]))
                     wins[m["winner"]] += 1
-                    pts[A] += s[A]
-                    pts[B] += s[B]
-                    rows.append({"Date": m["date"], A: s[A], B: s[B], "Winner": m["winner"]})
-                st.subheader("Matches won")
-                x1, x2 = st.columns(2)
-                x1.metric(A, wins[A])
-                x2.metric(B, wins[B])
-                st.subheader("Points won")
-                y1, y2 = st.columns(2)
-                y1.metric(A, pts[A])
-                y2.metric(B, pts[B])
-                st.subheader(f"Matches played together ({len(h2h)})")
+                    pts[name] += s[name]
+                    pts[opp] += s[opp]
+                    rows.append({"Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
+                pct = {k: f"{100 * wins[k] / n:.0f}%" for k in wins}
+                for title, vals in (("Matches won", wins), ("Points won", pts), ("Win %", pct)):
+                    st.markdown(f"**{title}**")
+                    x1, x2 = st.columns(2)
+                    x1.metric(name, vals[name])
+                    x2.metric(opp, vals[opp])
+                st.markdown(f"**Matches played together ({n})**")
                 st.dataframe(pd.DataFrame(rows[::-1]), hide_index=True)
+
+        if hist:
+            st.subheader("All matches")
+            st.dataframe(pd.DataFrame(hist[::-1]), hide_index=True)
+    else:
+        st.info("No players yet.")
