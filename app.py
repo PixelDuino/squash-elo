@@ -57,6 +57,20 @@ def recompute(players, matches):
         players[m["p1"]], players[m["p2"]] = n1, n2
 
 
+def rating_timeline(matches):
+    """READ-ONLY: one row per player per match on a shared timeline (step = match number in entry order).
+    A player's line starts at their first match and stays flat while they sit out. Never changes saved data."""
+    latest, rows = {}, []
+    for step, m in enumerate(matches, 1):
+        for who, key in ((m["p1"], "p1"), (m["p2"], "p2")):
+            if who not in latest:
+                rows.append({"Match": step - 1, "Player": who, "Rating": m[key + "_before"]})
+            latest[who] = m[key + "_after"]
+        for who, r in latest.items():
+            rows.append({"Match": step, "Player": who, "Rating": r})
+    return pd.DataFrame(rows, columns=["Match", "Player", "Rating"])
+
+
 def compare_table(a, b, rows):
     """Side-by-side comparison: names on top, stat label in the middle, each player's number on their side.
     rows = [(label, (shown_a, number_a), (shown_b, number_b)), ...]. The higher number is highlighted."""
@@ -128,6 +142,27 @@ if page == "Leaderboard":
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
     else:
         st.info("No players yet.")
+
+    # ----- all players' ratings on one graph (read-only) -----
+    if matches:
+        st.subheader("Rating history")
+        tl = rating_timeline(matches)
+        ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
+        shown = st.multiselect("Players shown", ranked, default=ranked[:6], key="chart_players")
+        tl = tl[tl["Player"].isin(shown)]
+        if shown:
+            # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
+            chart = (alt.Chart(tl).mark_line(point=True)
+                     .encode(x=alt.X("Match:Q", title="Matches played (all players)",
+                                     axis=alt.Axis(tickMinStep=1, format="d")),
+                             y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
+                             color=alt.Color("Player:N", legend=alt.Legend(orient="bottom", title=None)),
+                             tooltip=["Player:N", "Match:Q", alt.Tooltip("Rating:Q", format=".0f")])
+                     .properties(width="container", height=320))
+            st.altair_chart(chart)
+        else:
+            st.info("Pick at least one player to show.")
+
     if authed:
         with st.form("add", clear_on_submit=True):
             name = st.text_input("New player")
