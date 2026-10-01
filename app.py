@@ -58,17 +58,18 @@ def recompute(players, matches):
 
 
 def rating_timeline(matches):
-    """READ-ONLY: one row per player per match on a shared timeline (step = match number in entry order).
-    A player's line starts at their first match and stays flat while they sit out. Never changes saved data."""
-    latest, rows = {}, []
-    for step, m in enumerate(matches, 1):
+    """READ-ONLY: each player's rating after their 1st game, 2nd game, 3rd game... (Game 0 = starting rating).
+    Everyone's nth game lines up at the same point, so a player with more games just goes further along.
+    Never changes saved data."""
+    played, rows = {}, []
+    for m in matches:
         for who, key in ((m["p1"], "p1"), (m["p2"], "p2")):
-            if who not in latest:
-                rows.append({"Match": step - 1, "Player": who, "Rating": m[key + "_before"]})
-            latest[who] = m[key + "_after"]
-        for who, r in latest.items():
-            rows.append({"Match": step, "Player": who, "Rating": r})
-    return pd.DataFrame(rows, columns=["Match", "Player", "Rating"])
+            if who not in played:
+                played[who] = 0
+                rows.append({"Game": 0, "Player": who, "Rating": m[key + "_before"]})
+            played[who] += 1
+            rows.append({"Game": played[who], "Player": who, "Rating": m[key + "_after"]})
+    return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
 
 
 def compare_table(a, b, rows):
@@ -153,11 +154,11 @@ if page == "Leaderboard":
         if shown:
             # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
             chart = (alt.Chart(tl).mark_line(point=True)
-                     .encode(x=alt.X("Match:Q", title="Matches played (all players)",
+                     .encode(x=alt.X("Game:Q", title="Games played by each player",
                                      axis=alt.Axis(tickMinStep=1, format="d")),
                              y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
                              color=alt.Color("Player:N", legend=alt.Legend(orient="bottom", title=None)),
-                             tooltip=["Player:N", "Match:Q", alt.Tooltip("Rating:Q", format=".0f")])
+                             tooltip=["Player:N", "Game:Q", alt.Tooltip("Rating:Q", format=".0f")])
                      .properties(width="container", height=320))
             st.altair_chart(chart)
         else:
@@ -214,9 +215,9 @@ elif page == "Enter Match":
 elif page == "Match History":
     if matches:
         st.dataframe(pd.DataFrame([
-            {"Date": m["date"], "Player 1": m["p1"], "Player 2": m["p2"],
+            {"#": k, "Date": m["date"], "Player 1": m["p1"], "Player 2": m["p2"],
              "Score": f'{m["score"][0]}-{m["score"][1]}', "Winner": m["winner"]}
-            for m in reversed(matches)]), hide_index=True)
+            for k, m in zip(range(len(matches), 0, -1), reversed(matches))]), hide_index=True)
 
         if authed:
             st.subheader("Edit or delete a match")
@@ -224,7 +225,7 @@ elif page == "Match History":
             order = list(range(len(matches) - 1, -1, -1))  # newest first
             i = st.selectbox(
                 "Match", order, key="edit_idx",
-                format_func=lambda k: f'{matches[k]["date"]}  |  {matches[k]["p1"]} '
+                format_func=lambda k: f'#{k + 1}  |  {matches[k]["date"]}  |  {matches[k]["p1"]} '
                                       f'{matches[k]["score"][0]}-{matches[k]["score"][1]} {matches[k]["p2"]}')
             m = matches[i]
             names = sorted(players)
