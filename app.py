@@ -13,6 +13,7 @@ import requests
 import streamlit as st
 
 START_RATING, K_FACTOR = 1000, 32
+MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant) count
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
 HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
 
@@ -72,6 +73,56 @@ def rating_timeline(matches):
     return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
 
 
+def player_stats(matches):
+    """READ-ONLY: games, wins, points scored and points conceded for every player."""
+    out = {}
+    for m in matches:
+        a, b = m["score"]
+        for who, got, gave in ((m["p1"], a, b), (m["p2"], b, a)):
+            d = out.setdefault(who, {"g": 0, "w": 0, "f": 0, "a": 0})
+            d["g"] += 1
+            d["w"] += 1 if got > gave else 0
+            d["f"] += got
+            d["a"] += gave
+    return out
+
+
+def build_awards(matches):
+    """READ-ONLY: returns [(award name, [winner names], stat text), ...]. Tied players share an award."""
+    ps = player_stats(matches)
+
+    def top(scores):
+        if not scores:
+            return [], None
+        best = max(scores.values())
+        return [p for p, v in scores.items() if abs(v - best) < 1e-9], best
+
+    # Most Dominant: biggest gap between average points won and average points lost per game
+    names, best = top({p: (d["f"] - d["a"]) / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES})
+    cards = [("Most Dominant", names, f"{best:+.1f} Pts Per Game" if names else f"Needs {MIN_GAMES}+ Games")]
+    # Win Machine: most wins
+    names, best = top({p: d["w"] for p, d in ps.items()})
+    cards.append(("Win Machine", names, f"{best} Win{'' if best == 1 else 's'}" if names else ""))
+    # Iron Legs: most games played
+    names, best = top({p: d["g"] for p, d in ps.items()})
+    cards.append(("Iron Legs", names, f"{best} Game{'' if best == 1 else 's'}" if names else ""))
+    return cards
+
+
+def awards_html(cards):
+    """Award name on top, winner underneath on the left, stat on the same line to the right."""
+    out = []
+    for title, winners, stat in cards:
+        who = " &amp; ".join(html.escape(w) for w in winners) if winners else "No Winner Yet"
+        out.append('<div style="border-top:1px solid rgba(128,128,128,0.25);padding:12px 4px;">'
+                   f'<div style="font-weight:700;font-size:0.95rem;opacity:0.75;">{html.escape(title)}</div>'
+                   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
+                   f'<div style="font-weight:700;font-size:1.4rem;">{who}</div>'
+                   f'<div style="font-weight:700;font-size:1.2rem;color:#2a9d8f;white-space:nowrap;">{html.escape(stat)}</div>'
+                   '</div></div>')
+    st.markdown("".join(out), unsafe_allow_html=True)
+
+
 def compare_table(a, b, rows):
     """Side-by-side comparison: names on top, stat label in the middle, each player's number on their side.
     rows = [(label, (shown_a, number_a), (shown_b, number_b)), ...]. The higher number is highlighted."""
@@ -90,20 +141,20 @@ def compare_table(a, b, rows):
 
 
 # ---------- page ----------
-st.set_page_config(page_title="Squash Elo", page_icon="🎾")
+st.set_page_config(page_title="Squash Elo")
 st.title("Squash Elo")
 data, sha = load()
 players, matches = data["players"], data["matches"]
 authed = st.session_state.get("auth", False)
 
-with st.expander("Logged in ✅" if authed else "Login (needed to edit)"):
+with st.expander("Logged In" if authed else "Login (Needed To Edit)"):
     if authed:
-        if st.button("Log out"):
+        if st.button("Log Out"):
             st.session_state.auth = False
             st.rerun()
     else:
         pw = st.text_input("Password", type="password")
-        if st.button("Log in"):
+        if st.button("Log In"):
             if pw == st.secrets["APP_PASSWORD"]:
                 st.session_state.auth = True
                 st.rerun()
@@ -124,7 +175,7 @@ st.markdown("""
 .st-key-page div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
-page = st.radio("Page", ["Leaderboard", "Enter Match", "Match History", "Player History"],
+page = st.radio("Page", ["Leaderboard", "Enter Match", "Match History", "Player History", "Awards"],
                 horizontal=True, key="page", label_visibility="collapsed")
 
 # ----- leaderboard -----
@@ -150,15 +201,15 @@ if page == "Leaderboard":
 
     # ----- all players' ratings on one graph (read-only) -----
     if matches:
-        st.subheader("Rating history")
+        st.subheader("Rating History")
         tl = rating_timeline(matches)
         ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
-        shown = st.multiselect("Players shown", ranked, default=ranked[:6], key="chart_players")
+        shown = st.multiselect("Players Shown", ranked, default=ranked[:6], key="chart_players")
         tl = tl[tl["Player"].isin(shown)]
         if shown:
             # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
             chart = (alt.Chart(tl).mark_line(point=True)
-                     .encode(x=alt.X("Game:Q", title="Games played by each player",
+                     .encode(x=alt.X("Game:Q", title="Games Played By Each Player",
                                      axis=alt.Axis(tickMinStep=1, format="d")),
                              y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
                              color=alt.Color("Player:N", legend=alt.Legend(orient="bottom", title=None)),
@@ -170,8 +221,8 @@ if page == "Leaderboard":
 
     if authed:
         with st.form("add", clear_on_submit=True):
-            name = st.text_input("New player")
-            if st.form_submit_button("Add player") and name.strip():
+            name = st.text_input("New Player")
+            if st.form_submit_button("Add Player") and name.strip():
                 name = name.strip()
                 if name.lower() in [p.lower() for p in players]:
                     st.error("That player already exists.")
@@ -194,9 +245,9 @@ elif page == "Enter Match":
             c1, c2 = st.columns(2)
             p1 = c1.selectbox("Player 1", names)
             p2 = c2.selectbox("Player 2", names, index=1)
-            a = c1.number_input("Player 1 score", min_value=0, max_value=99, value=None, step=1, placeholder="Score")
-            b = c2.number_input("Player 2 score", min_value=0, max_value=99, value=None, step=1, placeholder="Score")
-            if st.form_submit_button("Submit match"):
+            a = c1.number_input("Player 1 Score", min_value=0, max_value=99, value=None, step=1, placeholder="Score")
+            b = c2.number_input("Player 2 Score", min_value=0, max_value=99, value=None, step=1, placeholder="Score")
+            if st.form_submit_button("Submit Match"):
                 if p1 == p2:
                     st.error("Pick two different players.")
                 elif a is None or b is None:
@@ -224,7 +275,7 @@ elif page == "Match History":
             for k, m in zip(range(len(matches), 0, -1), reversed(matches))]), hide_index=True)
 
         if authed:
-            st.subheader("Edit or delete a match")
+            st.subheader("Edit Or Delete A Match")
             st.caption("Ratings for every later match are recalculated automatically.")
             order = list(range(len(matches) - 1, -1, -1))  # newest first
             i = st.selectbox(
@@ -237,9 +288,9 @@ elif page == "Match History":
                 c1, c2 = st.columns(2)
                 e1 = c1.selectbox("Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
                 e2 = c2.selectbox("Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
-                s1 = c1.number_input("Player 1 score", 0, 99, m["score"][0], step=1, key=f"s1_{i}")
-                s2 = c2.number_input("Player 2 score", 0, 99, m["score"][1], step=1, key=f"s2_{i}")
-                if st.form_submit_button("Save changes"):
+                s1 = c1.number_input("Player 1 Score", 0, 99, m["score"][0], step=1, key=f"s1_{i}")
+                s2 = c2.number_input("Player 2 Score", 0, 99, m["score"][1], step=1, key=f"s2_{i}")
+                if st.form_submit_button("Save Changes"):
                     if e1 == e2:
                         st.error("Pick two different players.")
                     elif not valid_game(s1, s2):
@@ -250,7 +301,7 @@ elif page == "Match History":
                         save(data, sha, f"Edit match: {e1} {s1}-{s2} {e2}")
                         st.session_state.flash = "Match updated and ratings recalculated."
                         st.rerun()
-            if st.checkbox("I want to delete this match", key=f"del_ok_{i}") and st.button("Delete match"):
+            if st.checkbox("I Want To Delete This Match", key=f"del_ok_{i}") and st.button("Delete Match"):
                 matches.pop(i)
                 recompute(players, matches)
                 save(data, sha, "Delete match")
@@ -260,7 +311,7 @@ elif page == "Match History":
         st.info("No matches yet.")
 
 # ----- player history (with head to head) -----
-else:
+elif page == "Player History":
     if players:
         name = st.selectbox("Player", sorted(players), key="hist_player")
         ratings, hist = [START_RATING], []
@@ -275,19 +326,19 @@ else:
                          "Result": "Win" if m["winner"] == name else "Loss",
                          "Score": f"{a}-{b}" if me == "p1" else f"{b}-{a}",
                          "Rating": f"{before:.0f} → {after:.0f}", "Change": f"{after - before:+.1f}"})
-        st.metric("Current rating", round(ratings[-1]))
+        st.metric("Current Rating", round(ratings[-1]))
         # Fixed chart: no .interactive(), so it can't be dragged or zoomed. It stretches to fit the page
         # and the axes automatically rescale to fit every match.
         chart_df = pd.DataFrame({"Match": range(len(ratings)), "Rating": ratings})
         chart = (alt.Chart(chart_df).mark_line(point=True)
-                 .encode(x=alt.X("Match:Q", title="Matches played", axis=alt.Axis(tickMinStep=1, format="d")),
+                 .encode(x=alt.X("Match:Q", title="Matches Played", axis=alt.Axis(tickMinStep=1, format="d")),
                          y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
                          tooltip=["Match:Q", alt.Tooltip("Rating:Q", format=".0f")])
                  .properties(width="container", height=300))
         st.altair_chart(chart)
 
         # ----- head to head, right under the graph -----
-        st.subheader("Head to head")
+        st.subheader("Head To Head")
         others = [p for p in sorted(players) if p != name]
         if not others:
             st.info("Add another player to see head to head stats.")
@@ -307,15 +358,24 @@ else:
                     rows.append({"Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
                 compare_table(name, opp, [
                     ("Rating", (f"{players[name]:.0f}", players[name]), (f"{players[opp]:.0f}", players[opp])),
-                    ("Matches won", (wins[name], wins[name]), (wins[opp], wins[opp])),
-                    ("Points won", (pts[name], pts[name]), (pts[opp], pts[opp])),
+                    ("Matches Won", (wins[name], wins[name]), (wins[opp], wins[opp])),
+                    ("Points Won", (pts[name], pts[name]), (pts[opp], pts[opp])),
                     ("Win %", (f"{100 * wins[name] / n:.0f}%", wins[name]), (f"{100 * wins[opp] / n:.0f}%", wins[opp])),
                 ])
-                st.markdown(f"**Matches played together ({n})**")
+                st.markdown(f"**Matches Played Together ({n})**")
                 st.dataframe(pd.DataFrame(rows[::-1]), hide_index=True)
 
         if hist:
-            st.subheader("All matches")
+            st.subheader("All Matches")
             st.dataframe(pd.DataFrame(hist[::-1]), hide_index=True)
     else:
         st.info("No players yet.")
+
+# ----- awards -----
+else:
+    if not matches:
+        st.info("No matches yet.")
+    else:
+        awards_html(build_awards(matches))
+        st.caption(f"Most Dominant is the biggest gap between average points won and average points lost per game. "
+                   f"It needs at least {MIN_GAMES} games to count.")
