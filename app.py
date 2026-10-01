@@ -13,7 +13,8 @@ import requests
 import streamlit as st
 
 START_RATING, K_FACTOR = 1000, 32
-MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant) count
+MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
+CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
 HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
 
@@ -106,6 +107,47 @@ def build_awards(matches):
     # Iron Legs: most games played
     names, best = top({p: d["g"] for p, d in ps.items()})
     cards.append(("Iron Legs", names, f"{best} Game{'' if best == 1 else 's'}" if names else ""))
+
+    # Giant Killer: beat an opponent rated the most points higher than you (rating before the match)
+    upset = {}
+    for m in matches:
+        win, lose = ("p1", "p2") if m["score"][0] > m["score"][1] else ("p2", "p1")
+        gap = m[lose + "_before"] - m[win + "_before"]
+        if gap > 0:
+            upset[m[win]] = max(upset.get(m[win], 0), gap)
+    names, best = top(upset)
+    cards.append(("Giant Killer", names, f"+{best:.0f} Rating Gap" if names else "No Upsets Yet"))
+
+    # Hot Streak: longest run of consecutive wins
+    run, longest = {}, {}
+    for m in matches:
+        a, b = m["score"]
+        for who, won in ((m["p1"], a > b), (m["p2"], b > a)):
+            run[who] = run.get(who, 0) + 1 if won else 0
+            longest[who] = max(longest.get(who, 0), run[who])
+    names, best = top({p: v for p, v in longest.items() if v > 0})
+    cards.append(("Hot Streak", names, f"{best} Win{'' if best == 1 else 's'} In A Row" if names else ""))
+
+    # Brick Wall: fewest average points conceded per game
+    names, best = top({p: -d["a"] / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES})
+    cards.append(("Brick Wall", names, f"{-best:.1f} Pts Against Per Game" if names else f"Needs {MIN_GAMES}+ Games"))
+
+    # Nail Biter: most games decided by CLOSE_MARGIN points or fewer (win or lose)
+    close = {}
+    for m in matches:
+        if abs(m["score"][0] - m["score"][1]) <= CLOSE_MARGIN:
+            for who in (m["p1"], m["p2"]):
+                close[who] = close.get(who, 0) + 1
+    names, best = top(close)
+    cards.append(("Nail Biter", names, f"{best} Close Game{'' if best == 1 else 's'}" if names else "No Close Games Yet"))
+
+    # Peak Performer: highest rating ever reached
+    peak = {}
+    for m in matches:
+        for k in ("p1", "p2"):
+            peak[m[k]] = max(peak.get(m[k], START_RATING), m[k + "_after"])
+    names, best = top(peak)
+    cards.append(("Peak Performer", names, f"{best:.0f} Rating" if names else ""))
     return cards
 
 
@@ -377,5 +419,3 @@ else:
         st.info("No matches yet.")
     else:
         awards_html(build_awards(matches))
-        st.caption(f"Most Dominant is the biggest gap between average points won and average points lost per game. "
-                   f"It needs at least {MIN_GAMES} games to count.")
