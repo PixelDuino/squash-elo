@@ -139,7 +139,11 @@ if page == "Leaderboard":
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
             for i, p in enumerate(sorted(players, key=lambda x: -players[x]), 1)]
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True,
+        podium = {1: "#FFD700", 2: "#C0C0C0", 3: "#CD7F32"}  # flat gold, silver, bronze
+        styled = pd.DataFrame(rows).style.apply(
+            lambda r: [f"background-color: {podium[r['Rank']]}; color: #000000" if r["Rank"] in podium else ""] * len(r),
+            axis=1)
+        st.dataframe(styled, hide_index=True,
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
     else:
         st.info("No players yet.")
