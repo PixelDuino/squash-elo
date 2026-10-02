@@ -193,6 +193,7 @@ with st.expander("Logged In" if authed else "Login (Needed To Edit)"):
     if authed:
         if st.button("Log Out"):
             st.session_state.auth = False
+            st.session_state.page = "Leaderboard"  # don't stay on the Awards tab after logging out
             st.rerun()
     else:
         pw = st.text_input("Password", type="password")
@@ -217,8 +218,10 @@ st.markdown("""
 .st-key-page div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
-page = st.radio("Page", ["Leaderboard", "Enter Match", "Match History", "Player History", "Awards"],
-                horizontal=True, key="page", label_visibility="collapsed")
+pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (["Awards"] if authed else [])
+if st.session_state.get("page") not in pages:
+    st.session_state.page = "Leaderboard"
+page = st.radio("Page", pages, horizontal=True, key="page", label_visibility="collapsed")
 
 # ----- leaderboard -----
 if page == "Leaderboard":
