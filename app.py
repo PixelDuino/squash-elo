@@ -104,34 +104,22 @@ def player_stats(matches):
 
 
 def build_awards(matches):
-    """READ-ONLY: returns [(award name, [winner names], stat text), ...]. Tied players share an award."""
+    """READ-ONLY: returns [(award name, ranked rows, text if nobody qualifies), ...].
+    Each ranked row is (player, stat text, place). Tied players share a place."""
     ps = player_stats(matches)
+    plural = lambda n, word: f"{n} {word}{'' if n == 1 else 's'}"
 
-    def top(scores):
-        if not scores:
-            return [], None
-        best = max(scores.values())
-        return [p for p, v in scores.items() if abs(v - best) < 1e-9], best
+    def ranked(scores, fmt):  # scores: player -> number, higher is better
+        items = sorted(scores.items(), key=lambda kv: -kv[1])
+        return [(p, fmt(v), 1 + sum(1 for _, o in items if o > v + 1e-9)) for p, v in items]
 
-    # Most Dominant: biggest gap between average points won and average points lost per game
-    names, best = top({p: (d["f"] - d["a"]) / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES})
-    cards = [("Most Dominant", names, f"{best:+.1f} Pts Per Game" if names else f"Needs {MIN_GAMES}+ Games")]
-    # Win Machine: most wins
-    names, best = top({p: d["w"] for p, d in ps.items()})
-    cards.append(("Win Machine", names, f"{best} Win{'' if best == 1 else 's'}" if names else ""))
-    # Iron Legs: most games played
-    names, best = top({p: d["g"] for p, d in ps.items()})
-    cards.append(("Iron Legs", names, f"{best} Game{'' if best == 1 else 's'}" if names else ""))
-
-    # Giant Killer: beat an opponent rated the most points higher than you (rating before the match)
+    # Giant Killer: biggest rating gap overcome in a win (rating before the match)
     upset = {}
     for m in matches:
         win, lose = ("p1", "p2") if m["score"][0] > m["score"][1] else ("p2", "p1")
         gap = m[lose + "_before"] - m[win + "_before"]
         if gap > 0:
             upset[m[win]] = max(upset.get(m[win], 0), gap)
-    names, best = top(upset)
-    cards.append(("Giant Killer", names, f"+{best:.0f} Rating Gap" if names else "No Upsets Yet"))
 
     # Hot Streak: longest run of consecutive wins
     run, longest = {}, {}
@@ -140,43 +128,66 @@ def build_awards(matches):
         for who, won in ((m["p1"], a > b), (m["p2"], b > a)):
             run[who] = run.get(who, 0) + 1 if won else 0
             longest[who] = max(longest.get(who, 0), run[who])
-    names, best = top({p: v for p, v in longest.items() if v > 0})
-    cards.append(("Hot Streak", names, f"{best} Win{'' if best == 1 else 's'} In A Row" if names else ""))
 
-    # Brick Wall: fewest average points conceded per game
-    names, best = top({p: -d["a"] / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES})
-    cards.append(("Brick Wall", names, f"{-best:.1f} Pts Against Per Game" if names else f"Needs {MIN_GAMES}+ Games"))
-
-    # Nail Biter: most games decided by CLOSE_MARGIN points or fewer (win or lose)
+    # Nail Biter: games decided by CLOSE_MARGIN points or fewer (win or lose)
     close = {}
     for m in matches:
         if abs(m["score"][0] - m["score"][1]) <= CLOSE_MARGIN:
             for who in (m["p1"], m["p2"]):
                 close[who] = close.get(who, 0) + 1
-    names, best = top(close)
-    cards.append(("Nail Biter", names, f"{best} Close Game{'' if best == 1 else 's'}" if names else "No Close Games Yet"))
 
     # Peak Performer: highest rating ever reached
     peak = {}
     for m in matches:
         for k in ("p1", "p2"):
             peak[m[k]] = max(peak.get(m[k], START_RATING), m[k + "_after"])
-    names, best = top(peak)
-    cards.append(("Peak Performer", names, f"{best:.0f} Rating" if names else ""))
-    return cards
+
+    needs = f"Needs {MIN_GAMES}+ Games"
+    return [
+        ("Most Dominant", ranked({p: (d["f"] - d["a"]) / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
+                                 lambda v: f"{v:+.1f} Pts Per Game"), needs),
+        ("Win Machine", ranked({p: d["w"] for p, d in ps.items()}, lambda v: plural(v, "Win")), ""),
+        ("Iron Legs", ranked({p: d["g"] for p, d in ps.items()}, lambda v: plural(v, "Game")), ""),
+        ("Giant Killer", ranked(upset, lambda v: f"+{v:.0f} Rating Gap"), "No Upsets Yet"),
+        ("Hot Streak", ranked({p: v for p, v in longest.items() if v > 0},
+                              lambda v: plural(v, "Win") + " In A Row"), ""),
+        ("Brick Wall", ranked({p: -d["a"] / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
+                              lambda v: f"{-v:.1f} Pts Against Per Game"), needs),
+        ("Nail Biter", ranked(close, lambda v: plural(v, "Close Game")), "No Close Games Yet"),
+        ("Peak Performer", ranked(peak, lambda v: f"{v:.0f} Rating"), ""),
+    ]
 
 
 def awards_html(cards):
-    """Award name on top, winner underneath on the left, stat on the same line to the right."""
-    out = []
-    for title, winners, stat in cards:
-        who = " &amp; ".join(html.escape(w) for w in winners) if winners else "No Winner Yet"
-        out.append('<div style="border-top:1px solid rgba(128,128,128,0.25);padding:12px 4px;">'
-                   f'<div style="font-weight:700;font-size:0.95rem;opacity:0.75;">{html.escape(title)}</div>'
-                   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
-                   f'<div style="font-weight:700;font-size:1.4rem;">{who}</div>'
-                   f'<div style="font-weight:700;font-size:1.2rem;color:#2a9d8f;white-space:nowrap;">{html.escape(stat)}</div>'
-                   '</div></div>')
+    """Award name on top, winner on the left with the stat on the same line to the right.
+    Tap an award to expand it and see the next two players underneath."""
+    ordinal = lambda n: {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
+    out = ["<style>.aw summary{display:block;list-style:none;cursor:pointer;}"
+           ".aw summary::-webkit-details-marker{display:none;}"
+           ".aw .arrow{display:inline-block;width:7px;height:7px;margin:0 4px 3px 0;border-right:2px solid currentColor;"
+           "border-bottom:2px solid currentColor;transform:rotate(45deg);opacity:0.6;}"
+           ".aw[open] .arrow{transform:rotate(-135deg);margin-bottom:-2px;}</style>"]
+    for title, rows, empty in cards:
+        winners = [r for r in rows if r[2] == 1]
+        extra = rows[len(winners):len(winners) + 2]
+        who = " &amp; ".join(html.escape(r[0]) for r in winners) if winners else "No Winner Yet"
+        stat = winners[0][1] if winners else empty
+        arrow = '<span class="arrow"></span>' if extra else ""
+        head = ('<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<div style="font-weight:700;font-size:0.95rem;opacity:0.75;">{html.escape(title)}</div>{arrow}</div>'
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
+                f'<div style="font-weight:700;font-size:1.4rem;">{who}</div>'
+                f'<div style="font-weight:700;font-size:1.2rem;color:#2a9d8f;white-space:nowrap;">{html.escape(stat)}</div></div>')
+        box = "border-top:1px solid rgba(128,128,128,0.25);padding:12px 4px;"
+        if not extra:
+            out.append(f'<div style="{box}">{head}</div>')
+            continue
+        more = "".join(
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:8px 0 0 12px;">'
+            f'<div style="font-size:1.05rem;"><span style="opacity:0.6;margin-right:10px;">{ordinal(r[2])}</span>{html.escape(r[0])}</div>'
+            f'<div style="font-size:1rem;color:#2a9d8f;white-space:nowrap;">{html.escape(r[1])}</div></div>'
+            for r in extra)
+        out.append(f'<details class="aw" style="{box}"><summary>{head}</summary>{more}</details>')
     st.markdown("".join(out), unsafe_allow_html=True)
 
 
@@ -250,11 +261,7 @@ if page == "Leaderboard":
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
             for i, p in enumerate(sorted(players, key=lambda x: -players[x]), 1)]
     if rows:
-        podium = {1: "#FFD700", 2: "#C0C0C0", 3: "#CD7F32"}  # flat gold, silver, bronze
-        styled = pd.DataFrame(rows).style.apply(
-            lambda r: [f"background-color: {podium[r['Rank']]}; color: #000000" if r["Rank"] in podium else ""] * len(r),
-            axis=1)
-        st.dataframe(styled, hide_index=True,
+        st.dataframe(pd.DataFrame(rows), hide_index=True,
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
     else:
         st.info("No players yet.")
