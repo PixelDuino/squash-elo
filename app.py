@@ -74,6 +74,21 @@ def rating_timeline(matches):
     return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
 
 
+def rename_player(players, matches, old, new):
+    """Give a player a new name everywhere (ratings and every match they appear in)."""
+    players[new] = players.pop(old)
+    for m in matches:
+        for k in ("p1", "p2", "winner"):
+            if m[k] == old:
+                m[k] = new
+
+
+def forget_names():
+    """Clear remembered dropdown choices that may still point at an old or removed name."""
+    for k in ("chart_players", "hist_player", "hist_opp", "manage_who"):
+        st.session_state.pop(k, None)
+
+
 def player_stats(matches):
     """READ-ONLY: games, wins, points scored and points conceded for every player."""
     out = {}
@@ -277,6 +292,36 @@ if page == "Leaderboard":
                     st.session_state.flash = f"Added {name}"
                     st.rerun()
 
+        if players:
+            st.subheader("Manage Players")
+            who = st.selectbox("Player", sorted(players), key="manage_who")
+            with st.form("rename", clear_on_submit=True):
+                new = st.text_input("New Name")
+                if st.form_submit_button("Rename Player"):
+                    new = new.strip()
+                    if not new:
+                        st.error("Enter a new name.")
+                    elif new == who:
+                        st.error("That is already their name.")
+                    elif new.lower() in [p.lower() for p in players if p != who]:
+                        st.error("Another player already has that name.")
+                    else:
+                        rename_player(players, matches, who, new)
+                        save(data, sha, f"Rename {who} to {new}")
+                        forget_names()
+                        st.session_state.flash = f"Renamed {who} to {new}. All their matches were updated."
+                        st.rerun()
+            played = sum(who in (m["p1"], m["p2"]) for m in matches)
+            if played:
+                st.caption(f"{who} has played {played} match{'' if played == 1 else 'es'}, so they can't be removed. "
+                           "Delete those matches first in Match History if you really want to remove them.")
+            elif st.checkbox(f"I Want To Remove {who}", key=f"rm_ok_{who}") and st.button("Remove Player"):
+                del players[who]
+                save(data, sha, f"Remove player {who}")
+                forget_names()
+                st.session_state.flash = f"Removed {who}."
+                st.rerun()
+
 # ----- enter match -----
 elif page == "Enter Match":
     if not authed:
@@ -372,6 +417,15 @@ elif page == "Player History":
                          "Score": f"{a}-{b}" if me == "p1" else f"{b}-{a}",
                          "Rating": f"{before:.0f} → {after:.0f}", "Change": f"{after - before:+.1f}"})
         st.metric("Current Rating", round(ratings[-1]))
+        if hist:
+            last5 = hist[-5:]
+            badges = "".join(
+                '<span style="display:inline-block;width:2rem;height:2rem;line-height:2rem;text-align:center;'
+                'border-radius:6px;margin-right:6px;font-weight:700;color:#fff;'
+                f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
+                for h in last5)
+            st.markdown(f"**Recent Form** (Last {len(last5)}, Latest On The Right)<div style='margin-top:6px'>{badges}</div>",
+                        unsafe_allow_html=True)
         # Fixed chart: no .interactive(), so it can't be dragged or zoomed. It stretches to fit the page
         # and the axes automatically rescale to fit every match.
         chart_df = pd.DataFrame({"Match": range(len(ratings)), "Rating": ratings})
