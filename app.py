@@ -14,8 +14,7 @@ import streamlit as st
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
-CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter, Clutch Player)
-MIN_CLOSE = 3  # close games a player needs before Clutch Player counts them
+CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
 HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
 
@@ -131,13 +130,11 @@ def build_awards(matches):
             longest[who] = max(longest.get(who, 0), run[who])
 
     # Nail Biter: games decided by CLOSE_MARGIN points or fewer (win or lose)
-    close, close_w = {}, {}
+    close = {}
     for m in matches:
-        a, b = m["score"]
-        if abs(a - b) <= CLOSE_MARGIN:
-            for who, won in ((m["p1"], a > b), (m["p2"], b > a)):
+        if abs(m["score"][0] - m["score"][1]) <= CLOSE_MARGIN:
+            for who in (m["p1"], m["p2"]):
                 close[who] = close.get(who, 0) + 1
-                close_w[who] = close_w.get(who, 0) + (1 if won else 0)
 
     # Peak Performer: highest rating ever reached
     peak = {}
@@ -145,14 +142,16 @@ def build_awards(matches):
         for k in ("p1", "p2"):
             peak[m[k]] = max(peak.get(m[k], START_RATING), m[k + "_after"])
 
-    # Longest Reign: number of matches after which the player sat at number 1 on the leaderboard
-    rating, reign = {}, {}
+    # Longest Reign: matches a player played themselves while they were number 1 (entering the match
+    # with a rating strictly higher than everyone else who has played). Tied leaders don't count.
+    latest, reign = {}, {}
     for m in matches:
-        rating[m["p1"]], rating[m["p2"]] = m["p1_after"], m["p2_after"]
-        best_now = max(rating.values())
-        for p, r in rating.items():
-            if abs(r - best_now) < 1e-9:
+        before = {m["p1"]: m["p1_before"], m["p2"]: m["p2_before"]}
+        field = {**latest, **before}
+        for p, r in before.items():
+            if all(r > o + 1e-9 for q, o in field.items() if q != p):
                 reign[p] = reign.get(p, 0) + 1
+        latest[m["p1"]], latest[m["p2"]] = m["p1_after"], m["p2_after"]
 
     # Toughest Schedule: average rating of opponents at the time they were played
     opp_sum, beaten = {}, {}
@@ -176,10 +175,6 @@ def build_awards(matches):
                               lambda v: f"{-v:.1f} Pts Against Per Game"), needs),
         ("Nail Biter", ranked(close, lambda v: plural(v, "Close Game")), "No Close Games Yet"),
         ("Peak Performer", ranked(peak, lambda v: f"{v:.0f} Rating"), ""),
-        ("Sharpshooter", ranked({p: d["f"] / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
-                                lambda v: f"{v:.1f} Pts Per Game"), needs),
-        ("Clutch Player", ranked({p: close_w[p] / close[p] for p in close if close[p] >= MIN_CLOSE},
-                                 lambda v: f"{v * 100:.0f}% In Close Games"), f"Needs {MIN_CLOSE}+ Close Games"),
         ("Longest Reign", ranked(reign, lambda v: f"{v} Match{'' if v == 1 else 'es'} At No. 1"), ""),
         ("Toughest Schedule", ranked({p: opp_sum[p] / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
                                      lambda v: f"{v:.0f} Average Opponent"), needs),
