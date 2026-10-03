@@ -20,6 +20,7 @@ HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "appl
 
 
 # ---------- storage ----------
+@st.cache_data(ttl=30, show_spinner=False)  # keep a copy for 30 seconds so tapping around is instant
 def load():
     r = requests.get(URL, headers=HEAD, timeout=15)
     if r.status_code == 404:  # file doesn't exist yet
@@ -33,7 +34,14 @@ def save(data, sha, msg):
     body = {"message": msg, "content": base64.b64encode(json.dumps(data, indent=2).encode()).decode()}
     if sha:
         body["sha"] = sha
-    requests.put(URL, headers=HEAD, json=body, timeout=15).raise_for_status()
+    r = requests.put(URL, headers=HEAD, json=body, timeout=15)
+    if r.status_code in (409, 422):  # the saved file changed since this page loaded it: don't overwrite it
+        load.clear()
+        st.session_state.flash_err = ("Someone else saved a change a moment ago, so yours was not applied. "
+                                      "The latest data has been loaded. Please check it and try again.")
+        st.rerun()
+    r.raise_for_status()
+    load.clear()  # next page load fetches the fresh version
 
 
 # ---------- elo ----------
@@ -255,6 +263,8 @@ with st.expander("Logged In" if authed else "Login (Needed To Edit)"):
             else:
                 st.error("Wrong password")
 
+if "flash_err" in st.session_state:
+    st.error(st.session_state.pop("flash_err"))
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
 
@@ -292,24 +302,27 @@ if page == "Leaderboard":
         st.info("No players yet.")
 
     # ----- all players' ratings on one graph (read-only) -----
-    if matches:
-        st.subheader("Rating History")
-        tl = rating_timeline(matches)
-        ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
-        shown = st.multiselect("Players Shown", ranked, default=ranked[:6], key="chart_players")
-        tl = tl[tl["Player"].isin(shown)]
-        if shown:
-            # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
-            chart = (alt.Chart(tl).mark_line(point=True)
-                     .encode(x=alt.X("Game:Q", title="Games Played By Each Player",
-                                     axis=alt.Axis(tickMinStep=1, format="d")),
-                             y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
-                             color=alt.Color("Player:N", legend=alt.Legend(orient="bottom", title=None)),
-                             tooltip=["Player:N", "Game:Q", alt.Tooltip("Rating:Q", format=".0f")])
-                     .properties(width="container", height=320))
-            st.altair_chart(chart)
-        else:
-            st.info("Pick at least one player to show.")
+    @st.fragment
+    def rating_chart():
+        if matches:
+            st.subheader("Rating History")
+            tl = rating_timeline(matches)
+            ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
+            shown = st.multiselect("Players Shown", ranked, default=ranked[:6], key="chart_players")
+            tl = tl[tl["Player"].isin(shown)]
+            if shown:
+                # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
+                chart = (alt.Chart(tl).mark_line(point=True)
+                         .encode(x=alt.X("Game:Q", title="Games Played By Each Player",
+                                         axis=alt.Axis(tickMinStep=1, format="d")),
+                                 y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
+                                 color=alt.Color("Player:N", legend=alt.Legend(orient="bottom", title=None)),
+                                 tooltip=["Player:N", "Game:Q", alt.Tooltip("Rating:Q", format=".0f")])
+                         .properties(width="container", height=320))
+                st.altair_chart(chart)
+            else:
+                st.info("Pick at least one player to show.")
+    rating_chart()
 
     if authed:
         with st.form("add", clear_on_submit=True):
@@ -397,110 +410,116 @@ elif page == "Match History":
             for k, m in zip(range(len(matches), 0, -1), reversed(matches))]), hide_index=True)
 
         if authed:
-            st.subheader("Edit Or Delete A Match")
-            st.caption("Ratings for every later match are recalculated automatically.")
-            order = list(range(len(matches) - 1, -1, -1))  # newest first
-            i = st.selectbox(
-                "Match", order, key="edit_idx",
-                format_func=lambda k: f'#{k + 1}  |  {matches[k]["date"]}  |  {matches[k]["p1"]} '
-                                      f'{matches[k]["score"][0]}-{matches[k]["score"][1]} {matches[k]["p2"]}')
-            m = matches[i]
-            names = sorted(players)
-            with st.form(f"edit_{i}"):
-                c1, c2 = st.columns(2)
-                e1 = c1.selectbox("Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
-                e2 = c2.selectbox("Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
-                s1 = c1.number_input("Player 1 Score", 0, 99, m["score"][0], step=1, key=f"s1_{i}")
-                s2 = c2.number_input("Player 2 Score", 0, 99, m["score"][1], step=1, key=f"s2_{i}")
-                if st.form_submit_button("Save Changes"):
-                    if e1 == e2:
-                        st.error("Pick two different players.")
-                    elif not valid_game(s1, s2):
-                        st.error(f"{s1}-{s2} isn't valid. Games go to 11, win by 2 (e.g. 11-9, 12-10, 15-13).")
-                    else:
-                        m.update(p1=e1, p2=e2, score=[s1, s2])
-                        recompute(players, matches)
-                        save(data, sha, f"Edit match: {e1} {s1}-{s2} {e2}")
-                        st.session_state.flash = "Match updated and ratings recalculated."
-                        st.rerun()
-            if st.checkbox("I Want To Delete This Match", key=f"del_ok_{i}") and st.button("Delete Match"):
-                matches.pop(i)
-                recompute(players, matches)
-                save(data, sha, "Delete match")
-                st.session_state.flash = "Match deleted and ratings recalculated."
-                st.rerun()
+            @st.fragment
+            def edit_match():
+                st.subheader("Edit Or Delete A Match")
+                st.caption("Ratings for every later match are recalculated automatically.")
+                order = list(range(len(matches) - 1, -1, -1))  # newest first
+                i = st.selectbox(
+                    "Match", order, key="edit_idx",
+                    format_func=lambda k: f'#{k + 1}  |  {matches[k]["date"]}  |  {matches[k]["p1"]} '
+                                          f'{matches[k]["score"][0]}-{matches[k]["score"][1]} {matches[k]["p2"]}')
+                m = matches[i]
+                names = sorted(players)
+                with st.form(f"edit_{i}"):
+                    c1, c2 = st.columns(2)
+                    e1 = c1.selectbox("Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
+                    e2 = c2.selectbox("Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
+                    s1 = c1.number_input("Player 1 Score", 0, 99, m["score"][0], step=1, key=f"s1_{i}")
+                    s2 = c2.number_input("Player 2 Score", 0, 99, m["score"][1], step=1, key=f"s2_{i}")
+                    if st.form_submit_button("Save Changes"):
+                        if e1 == e2:
+                            st.error("Pick two different players.")
+                        elif not valid_game(s1, s2):
+                            st.error(f"{s1}-{s2} isn't valid. Games go to 11, win by 2 (e.g. 11-9, 12-10, 15-13).")
+                        else:
+                            m.update(p1=e1, p2=e2, score=[s1, s2])
+                            recompute(players, matches)
+                            save(data, sha, f"Edit match: {e1} {s1}-{s2} {e2}")
+                            st.session_state.flash = "Match updated and ratings recalculated."
+                            st.rerun()
+                if st.checkbox("I Want To Delete This Match", key=f"del_ok_{i}") and st.button("Delete Match"):
+                    matches.pop(i)
+                    recompute(players, matches)
+                    save(data, sha, "Delete match")
+                    st.session_state.flash = "Match deleted and ratings recalculated."
+                    st.rerun()
+            edit_match()
     else:
         st.info("No matches yet.")
 
 # ----- player history (with head to head) -----
 elif page == "Player History":
-    if players:
-        name = st.selectbox("Player", sorted(players), key="hist_player")
-        ratings, hist = [START_RATING], []
-        for m in matches:
-            if name not in (m["p1"], m["p2"]):
-                continue
-            me = "p1" if m["p1"] == name else "p2"
-            a, b = m["score"]
-            before, after = m[me + "_before"], m[me + "_after"]
-            ratings.append(after)
-            hist.append({"Date": m["date"], "Opponent": m["p2"] if me == "p1" else m["p1"],
-                         "Result": "Win" if m["winner"] == name else "Loss",
-                         "Score": f"{a}-{b}" if me == "p1" else f"{b}-{a}",
-                         "Rating": f"{before:.0f} → {after:.0f}", "Change": f"{after - before:+.1f}"})
-        st.metric("Current Rating", round(ratings[-1]))
-        if hist:
-            last5 = hist[-5:]
-            badges = "".join(
-                '<span style="display:inline-block;width:2rem;height:2rem;line-height:2rem;text-align:center;'
-                'border-radius:6px;margin-right:6px;font-weight:700;color:#fff;'
-                f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
-                for h in last5)
-            st.markdown(f"**Recent Form** (Last {len(last5)}, Latest On The Right)<div style='margin-top:6px'>{badges}</div>",
-                        unsafe_allow_html=True)
-        # Fixed chart: no .interactive(), so it can't be dragged or zoomed. It stretches to fit the page
-        # and the axes automatically rescale to fit every match.
-        chart_df = pd.DataFrame({"Match": range(len(ratings)), "Rating": ratings})
-        chart = (alt.Chart(chart_df).mark_line(point=True)
-                 .encode(x=alt.X("Match:Q", title="Matches Played", axis=alt.Axis(tickMinStep=1, format="d")),
-                         y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
-                         tooltip=["Match:Q", alt.Tooltip("Rating:Q", format=".0f")])
-                 .properties(width="container", height=300))
-        st.altair_chart(chart)
+    @st.fragment
+    def player_history():
+        if players:
+            name = st.selectbox("Player", sorted(players), key="hist_player")
+            ratings, hist = [START_RATING], []
+            for m in matches:
+                if name not in (m["p1"], m["p2"]):
+                    continue
+                me = "p1" if m["p1"] == name else "p2"
+                a, b = m["score"]
+                before, after = m[me + "_before"], m[me + "_after"]
+                ratings.append(after)
+                hist.append({"Date": m["date"], "Opponent": m["p2"] if me == "p1" else m["p1"],
+                             "Result": "Win" if m["winner"] == name else "Loss",
+                             "Score": f"{a}-{b}" if me == "p1" else f"{b}-{a}",
+                             "Rating": f"{before:.0f} → {after:.0f}", "Change": f"{after - before:+.1f}"})
+            st.metric("Current Rating", round(ratings[-1]))
+            if hist:
+                last5 = hist[-5:]
+                badges = "".join(
+                    '<span style="display:inline-block;width:2rem;height:2rem;line-height:2rem;text-align:center;'
+                    'border-radius:6px;margin-right:6px;font-weight:700;color:#fff;'
+                    f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
+                    for h in last5)
+                st.markdown(f"**Recent Form** (Last {len(last5)}, Latest On The Right)<div style='margin-top:6px'>{badges}</div>",
+                            unsafe_allow_html=True)
+            # Fixed chart: no .interactive(), so it can't be dragged or zoomed. It stretches to fit the page
+            # and the axes automatically rescale to fit every match.
+            chart_df = pd.DataFrame({"Match": range(len(ratings)), "Rating": ratings})
+            chart = (alt.Chart(chart_df).mark_line(point=True)
+                     .encode(x=alt.X("Match:Q", title="Matches Played", axis=alt.Axis(tickMinStep=1, format="d")),
+                             y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
+                             tooltip=["Match:Q", alt.Tooltip("Rating:Q", format=".0f")])
+                     .properties(width="container", height=300))
+            st.altair_chart(chart)
 
-        # ----- head to head, right under the graph -----
-        st.subheader("Head To Head")
-        others = [p for p in sorted(players) if p != name]
-        if not others:
-            st.info("Add another player to see head to head stats.")
-        else:
-            opp = st.selectbox("Versus", others, key="hist_opp")
-            h2h = [m for m in matches if {m["p1"], m["p2"]} == {name, opp}]
-            if not h2h:
-                st.info(f"{name} and {opp} haven't played each other yet.")
+            # ----- head to head, right under the graph -----
+            st.subheader("Head To Head")
+            others = [p for p in sorted(players) if p != name]
+            if not others:
+                st.info("Add another player to see head to head stats.")
             else:
-                n = len(h2h)
-                wins, pts, rows = {name: 0, opp: 0}, {name: 0, opp: 0}, []
-                for m in h2h:
-                    s = dict(zip((m["p1"], m["p2"]), m["score"]))
-                    wins[m["winner"]] += 1
-                    pts[name] += s[name]
-                    pts[opp] += s[opp]
-                    rows.append({"Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
-                compare_table(name, opp, [
-                    ("Rating", (f"{players[name]:.0f}", players[name]), (f"{players[opp]:.0f}", players[opp])),
-                    ("Matches Won", (wins[name], wins[name]), (wins[opp], wins[opp])),
-                    ("Points Won", (pts[name], pts[name]), (pts[opp], pts[opp])),
-                    ("Win %", (f"{100 * wins[name] / n:.0f}%", wins[name]), (f"{100 * wins[opp] / n:.0f}%", wins[opp])),
-                ])
-                st.markdown(f"**Matches Played Together ({n})**")
-                st.dataframe(pd.DataFrame(rows[::-1]), hide_index=True)
+                opp = st.selectbox("Versus", others, key="hist_opp")
+                h2h = [m for m in matches if {m["p1"], m["p2"]} == {name, opp}]
+                if not h2h:
+                    st.info(f"{name} and {opp} haven't played each other yet.")
+                else:
+                    n = len(h2h)
+                    wins, pts, rows = {name: 0, opp: 0}, {name: 0, opp: 0}, []
+                    for m in h2h:
+                        s = dict(zip((m["p1"], m["p2"]), m["score"]))
+                        wins[m["winner"]] += 1
+                        pts[name] += s[name]
+                        pts[opp] += s[opp]
+                        rows.append({"Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
+                    compare_table(name, opp, [
+                        ("Rating", (f"{players[name]:.0f}", players[name]), (f"{players[opp]:.0f}", players[opp])),
+                        ("Matches Won", (wins[name], wins[name]), (wins[opp], wins[opp])),
+                        ("Points Won", (pts[name], pts[name]), (pts[opp], pts[opp])),
+                        ("Win %", (f"{100 * wins[name] / n:.0f}%", wins[name]), (f"{100 * wins[opp] / n:.0f}%", wins[opp])),
+                    ])
+                    st.markdown(f"**Matches Played Together ({n})**")
+                    st.dataframe(pd.DataFrame(rows[::-1]), hide_index=True)
 
-        if hist:
-            st.subheader("All Matches")
-            st.dataframe(pd.DataFrame(hist[::-1]), hide_index=True)
-    else:
-        st.info("No players yet.")
+            if hist:
+                st.subheader("All Matches")
+                st.dataframe(pd.DataFrame(hist[::-1]), hide_index=True)
+        else:
+            st.info("No players yet.")
+    player_history()
 
 # ----- awards -----
 else:
