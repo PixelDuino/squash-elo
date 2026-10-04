@@ -14,6 +14,12 @@ import streamlit as st
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
+# Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
+PER_WEIGHTS = {"win": 0.30,   # win percentage
+               "diff": 0.25,  # average point difference per game (points won minus points lost)
+               "off": 0.15,   # average points won per game
+               "dfn": 0.15,   # average points lost per game (fewer is better)
+               "sos": 0.15}   # strength of schedule: average rating of opponents played
 CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
 HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
@@ -162,8 +168,27 @@ def build_awards(matches):
             if won:
                 beaten.setdefault(m[me], set()).add(m[other])
 
+    # Player Efficiency Rating (PER): each stat is converted to a z-score against the other qualified players
+    # (how many standard deviations above or below the group average), blended with PER_WEIGHTS, then
+    # scaled so the group average is exactly 15 and one standard deviation is worth 5 points.
+    comps = {p: {"win": d["w"] / d["g"], "diff": (d["f"] - d["a"]) / d["g"], "off": d["f"] / d["g"],
+                 "dfn": -d["a"] / d["g"], "sos": opp_sum[p] / d["g"]}
+             for p, d in ps.items() if d["g"] >= MIN_GAMES}
+    per = {}
+    if len(comps) >= 2:
+        blend = {p: 0.0 for p in comps}
+        for key, weight in PER_WEIGHTS.items():
+            vals = [c[key] for c in comps.values()]
+            mean = sum(vals) / len(vals)
+            sd = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+            if sd > 1e-9:
+                for p, c in comps.items():
+                    blend[p] += weight * (c[key] - mean) / sd
+        per = {p: 15 + 5 * z for p, z in blend.items()}
+
     needs = f"Needs {MIN_GAMES}+ Games"
     return [
+        ("Player Efficiency Rating", ranked(per, lambda v: f"{v:.1f} PER"), f"Needs 2+ Players With {MIN_GAMES}+ Games"),
         ("Most Dominant", ranked({p: (d["f"] - d["a"]) / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
                                  lambda v: f"{v:+.1f} Pts Per Game"), needs),
         ("Win Machine", ranked({p: d["w"] for p, d in ps.items()}, lambda v: plural(v, "Win")), ""),
