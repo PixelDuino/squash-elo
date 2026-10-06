@@ -20,6 +20,7 @@ PER_WEIGHTS = {"win": 0.30,   # win percentage
                "off": 0.15,   # average points won per game
                "dfn": 0.15,   # average points lost per game (fewer is better)
                "sos": 0.15}   # strength of schedule: average rating of opponents played
+SHUTOUT_BONUS = 5  # extra rating points for winning 11-0 (the loser only gets the normal drop)
 CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
 HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
@@ -48,9 +49,24 @@ def elo(r1, r2, s1):
     return r1 + K_FACTOR * (s1 - e1), r2 + K_FACTOR * ((1 - s1) - (1 - e1))
 
 
+SCORE_RULES = ("Games go to 11, win by 2 (11-9, 12-10, 13-11, 14-12). "
+               "At 14-14 the next point wins, so the highest score is 15-14.")
+
+
 def valid_game(a, b):
     hi, lo = max(a, b), min(a, b)
-    return (hi == 11 and lo <= 9) or (hi > 11 and hi - lo == 2)
+    return (hi == 11 and lo <= 9) or (12 <= hi <= 14 and hi - lo == 2) or (hi == 15 and lo == 14)
+
+
+def shutout_bonus(a, b):
+    """Winning 11-0 earns the winner a bonus on top of the normal rating change."""
+    return SHUTOUT_BONUS if sorted((a, b)) == [0, 11] else 0
+
+
+def play(r1, r2, a, b, bonus=0):
+    """New ratings after one game. The bonus goes to the winner only; the loser just gets the normal Elo drop."""
+    n1, n2 = elo(r1, r2, 1 if a > b else 0)
+    return (n1 + bonus, n2) if a > b else (n1, n2 + bonus)
 
 
 def recompute(players, matches):
@@ -60,7 +76,7 @@ def recompute(players, matches):
     for m in matches:
         a, b = m["score"]
         r1, r2 = players[m["p1"]], players[m["p2"]]
-        n1, n2 = elo(r1, r2, 1 if a > b else 0)
+        n1, n2 = play(r1, r2, a, b, m.get("bonus", 0))  # matches saved before the bonus existed have no bonus
         m.update(p1_before=r1, p1_after=n1, p2_before=r2, p2_after=n2, winner=m["p1"] if a > b else m["p2"])
         players[m["p1"]], players[m["p2"]] = n1, n2
 
@@ -241,6 +257,38 @@ def awards_html(cards):
     st.markdown("".join(out), unsafe_allow_html=True)
 
 
+def toggle_player(name):
+    """Tap a player to pick them, tap again to un-pick. Picking a third drops the earliest pick."""
+    sel = st.session_state.get("m_players", [])
+    st.session_state.m_players = [p for p in sel if p != name] if name in sel else (sel + [name])[-2:]
+
+
+def set_score(slot, n):
+    st.session_state[slot] = n
+
+
+def clear_entry():
+    st.session_state.m_players, st.session_state.m_s1, st.session_state.m_s2 = [], None, None
+
+
+def tap(label, key, selected, on_click, args):
+    kw = dict(key=key, type="primary" if selected else "secondary", on_click=on_click, args=args)
+    try:
+        return st.button(label, width="stretch", **kw)
+    except TypeError:  # older Streamlit versions
+        return st.button(label, use_container_width=True, **kw)
+
+
+def button_grid(grid_key, cells, cols=4):
+    """Tappable boxes in a grid. Always 4 columns (even on a phone) and rows are added as needed.
+    cells = [(label, button_key, selected, on_click, args), ...]"""
+    with st.container(key=grid_key):
+        for i in range(0, len(cells), cols):
+            for col, cell in zip(st.columns(cols), cells[i:i + cols]):
+                with col:
+                    tap(*cell)
+
+
 def compare_table(a, b, rows):
     """Side-by-side comparison: names on top, stat label in the middle, each player's number on their side.
     rows = [(label, (shown_a, number_a), (shown_b, number_b)), ...]. The higher number is highlighted."""
@@ -311,7 +359,7 @@ if page == "Leaderboard":
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
             for i, p in enumerate(sorted(players, key=lambda x: -players[x]), 1)]
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True,
+        st.dataframe(pd.DataFrame(rows), hide_index=True, height=35 * (len(rows) + 1) + 3,
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
     else:
         st.info("No players yet.")
@@ -386,31 +434,55 @@ elif page == "Enter Match":
     elif len(players) < 2:
         st.info("Add at least two players first.")
     else:
-        names = sorted(players)
-        st.caption("Single game to 11, win by 2.")
-        with st.form("match", clear_on_submit=True):
-            c1, c2 = st.columns(2)
-            p1 = c1.selectbox("Player 1", names)
-            p2 = c2.selectbox("Player 2", names, index=1)
-            a = c1.number_input("Player 1 Score", min_value=0, max_value=99, value=None, step=1, placeholder="Score")
-            b = c2.number_input("Player 2 Score", min_value=0, max_value=99, value=None, step=1, placeholder="Score")
-            if st.form_submit_button("Submit Match"):
-                if p1 == p2:
-                    st.error("Pick two different players.")
-                elif a is None or b is None:
-                    st.error("Enter both scores.")
-                elif not valid_game(a, b):
-                    st.error(f"{a}-{b} isn't valid. Games go to 11, win by 2 (e.g. 11-9, 12-10, 15-13).")
+        st.markdown("""
+<style>
+[class*="st-key-grid_"] [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.4rem !important; }
+[class*="st-key-grid_"] [data-testid="stColumn"], [class*="st-key-grid_"] [data-testid="column"] {
+    min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+[class*="st-key-grid_"] button { min-height: 2.8rem; padding: 0.25rem 0.2rem; }
+[class*="st-key-grid_"] button p { font-size: 0.9rem; line-height: 1.1; overflow-wrap: anywhere; }
+.st-key-grid_s1 button p, .st-key-grid_s2 button p { font-size: 1.15rem; font-weight: 600; }
+</style>
+""", unsafe_allow_html=True)
+        sel = [p for p in st.session_state.get("m_players", []) if p in players]
+        st.session_state.m_players = sel
+        st.caption("Games go to 11, win by 2. At 14-14 the next point wins (15-14). "
+                   f"Winning 11-0 earns a +{SHUTOUT_BONUS} rating bonus.")
+        st.markdown("**Tap Two Players**")
+        button_grid("grid_players", [(n, f"pick_{n}", n in sel, toggle_player, (n,)) for n in sorted(players)])
+        st.caption(f"Player 1: {sel[0] if sel else '-'}   |   Player 2: {sel[1] if len(sel) > 1 else '-'}")
+
+        if len(sel) == 2:
+            p1, p2 = sel
+            s1, s2 = st.session_state.get("m_s1"), st.session_state.get("m_s2")
+            st.markdown(f"**{p1} Score**")
+            button_grid("grid_s1", [(str(n), f"sc1_{n}", s1 == n, set_score, ("m_s1", n)) for n in range(16)])
+            st.markdown(f"**{p2} Score**")
+            button_grid("grid_s2", [(str(n), f"sc2_{n}", s2 == n, set_score, ("m_s2", n)) for n in range(16)])
+            st.markdown(f"### {p1} {'-' if s1 is None else s1}  :  {'-' if s2 is None else s2} {p2}")
+
+            go = st.button("Submit Match", type="primary", key="submit_match")
+            st.button("Clear", key="clear_entry", on_click=clear_entry)
+            if go:
+                if s1 is None or s2 is None:
+                    st.error("Tap a score for both players.")
+                elif not valid_game(s1, s2):
+                    st.error(f"{s1}-{s2} isn't valid. {SCORE_RULES}")
                 else:
                     r1, r2 = players[p1], players[p2]
-                    n1, n2 = elo(r1, r2, 1 if a > b else 0)
+                    bonus = shutout_bonus(s1, s2)
+                    n1, n2 = play(r1, r2, s1, s2, bonus)
                     players[p1], players[p2] = n1, n2
                     matches.append({
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "p1": p1, "p2": p2,
-                        "score": [a, b], "winner": p1 if a > b else p2,
+                        "score": [s1, s2], "winner": p1 if s1 > s2 else p2, "bonus": bonus,
                         "p1_before": r1, "p1_after": n1, "p2_before": r2, "p2_after": n2})
-                    save(data, sha, f"{p1} {a}-{b} {p2}")
-                    st.session_state.flash = f"{p1}: {r1:.0f} → {n1:.0f}  |  {p2}: {r2:.0f} → {n2:.0f}"
+                    save(data, sha, f"{p1} {s1}-{s2} {p2}")
+                    msg = f"{p1}: {r1:.0f} → {n1:.0f}  |  {p2}: {r2:.0f} → {n2:.0f}"
+                    if bonus:
+                        msg += f"  |  11-0 bonus: +{bonus} to {p1 if s1 > s2 else p2}"
+                    clear_entry()
+                    st.session_state.flash = msg
                     st.rerun()
 
 # ----- match history -----
@@ -435,15 +507,15 @@ elif page == "Match History":
                 c1, c2 = st.columns(2)
                 e1 = c1.selectbox("Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
                 e2 = c2.selectbox("Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
-                s1 = c1.number_input("Player 1 Score", 0, 99, m["score"][0], step=1, key=f"s1_{i}")
-                s2 = c2.number_input("Player 2 Score", 0, 99, m["score"][1], step=1, key=f"s2_{i}")
+                s1 = c1.number_input("Player 1 Score", 0, max(15, m["score"][0]), m["score"][0], step=1, key=f"s1_{i}")
+                s2 = c2.number_input("Player 2 Score", 0, max(15, m["score"][1]), m["score"][1], step=1, key=f"s2_{i}")
                 if st.form_submit_button("Save Changes"):
                     if e1 == e2:
                         st.error("Pick two different players.")
                     elif not valid_game(s1, s2):
-                        st.error(f"{s1}-{s2} isn't valid. Games go to 11, win by 2 (e.g. 11-9, 12-10, 15-13).")
+                        st.error(f"{s1}-{s2} isn't valid. {SCORE_RULES}")
                     else:
-                        m.update(p1=e1, p2=e2, score=[s1, s2])
+                        m.update(p1=e1, p2=e2, score=[s1, s2], bonus=shutout_bonus(s1, s2))
                         recompute(players, matches)
                         save(data, sha, f"Edit match: {e1} {s1}-{s2} {e2}")
                         st.session_state.flash = "Match updated and ratings recalculated."
