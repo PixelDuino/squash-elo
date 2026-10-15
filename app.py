@@ -11,6 +11,7 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
@@ -115,7 +116,7 @@ def rename_player(players, matches, old, new):
 
 def forget_names():
     """Clear remembered dropdown choices that may still point at an old or removed name."""
-    for k in ("chart_players", "hist_player", "hist_opp", "manage_who"):
+    for k in ("chart_sel", "hist_player", "hist_opp", "manage_who"):
         st.session_state.pop(k, None)
 
 
@@ -271,6 +272,20 @@ def toggle_player(name):
     st.session_state.m_players = [p for p in sel if p != name] if name in sel else (sel + [name])[-2:]
 
 
+def toggle_chart(name):
+    """Tap a player's tile to add or remove their line from the rating history graph."""
+    sel = st.session_state.get("chart_sel", [])
+    st.session_state.chart_sel = [p for p in sel if p != name] if name in sel else sel + [name]
+
+
+def form_btn(container, label):
+    """A submit button that fills its column (works across Streamlit versions)."""
+    try:
+        return container.form_submit_button(label, width="stretch")
+    except TypeError:
+        return container.form_submit_button(label, use_container_width=True)
+
+
 def set_score(slot, n):
     st.session_state[slot] = n
 
@@ -302,7 +317,7 @@ def compare_table(a, b, rows):
     rows = [(label, (shown_a, number_a), (shown_b, number_b)), ...]. The higher number is highlighted."""
     line = "border-top:1px solid rgba(128,128,128,0.25);padding:8px 4px;"
     name_css = "font-weight:700;font-size:1.15rem;padding-bottom:8px;"
-    out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;text-align:center;">',
+    out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:baseline;text-align:center;">',
            f'<div style="{name_css}">{html.escape(a)}</div><div></div>',
            f'<div style="{name_css}">{html.escape(b)}</div>']
     for label, (sa, na), (sb, nb) in rows:
@@ -350,8 +365,43 @@ st.markdown("""
 .st-key-page div[role="radiogroup"] label > div:first-child { display: none; }
 .st-key-page div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #ff4b4b; }
 .st-key-page div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
+/* hide the little hover toolbar (download CSV, fullscreen, search) on tables and graphs */
+[data-testid="stElementToolbar"], [data-testid="stDataFrameToolbar"], .vega-embed details, .vega-embed summary { display: none !important; }
+/* pull the title up closer to the top bar */
+[data-testid="stMainBlockContainer"], .block-container { padding-top: 3.75rem !important; }
+[data-testid="stHeading"] h1 { padding-top: 0.25rem !important; }
+/* tappable tile grids: always 4 columns, even on a phone */
+[class*="st-key-grid_"] [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.4rem !important; }
+[class*="st-key-grid_"] [data-testid="stColumn"], [class*="st-key-grid_"] [data-testid="column"] {
+    min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+[class*="st-key-grid_"] button { min-height: 2.8rem; padding: 0.25rem 0.2rem; }
+[class*="st-key-grid_"] button p { font-size: 0.9rem; line-height: 1.1; overflow-wrap: anywhere; }
+.st-key-grid_s1 button p, .st-key-grid_s2 button p { font-size: 1.15rem; font-weight: 600; }
+/* keep the invisible helper script below from adding blank space */
+[data-testid="stElementContainer"]:has(iframe[height="0"]), [data-testid="stElementContainer"]:has([data-testid="stHtml"]) { position: absolute; width: 0; height: 0; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
+
+# Dropdowns can't be typed into (no phone keyboard pops up): mark every dropdown's search box read-only.
+# A tiny script runs in the page itself and re-applies this whenever a dropdown is drawn.
+NO_TYPE_JS = """
+function fix() {
+  document.querySelectorAll('div[data-baseweb="select"] input').forEach(function (i) {
+    i.setAttribute("inputmode", "none");
+    i.setAttribute("readonly", "readonly");
+    i.setAttribute("autocomplete", "off");
+  });
+}
+fix();
+new MutationObserver(fix).observe(document.body, {childList: true, subtree: true});
+"""
+try:
+    st.html(f"<script>if (!window.__noTypeSelects) {{ window.__noTypeSelects = true; {NO_TYPE_JS} }}</script>",
+            unsafe_allow_javascript=True)
+except TypeError:  # older Streamlit versions: run the same script from inside a hidden frame instead
+    components.html(
+        "<script>var w = window.parent; if (!w.__noTypeSelects) { w.__noTypeSelects = true; var s = w.document.createElement('script');"
+        " s.textContent = " + json.dumps(NO_TYPE_JS) + "; w.document.head.appendChild(s); }</script>", height=0)
 pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (["Awards"] if authed else [])
 if st.session_state.get("page") not in pages:
     st.session_state.page = "Leaderboard"
@@ -381,7 +431,11 @@ if page == "Leaderboard":
             st.subheader("Rating History")
             tl = rating_timeline(matches)
             ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
-            shown = st.multiselect("Players Shown", ranked, default=ranked[:6], key="chart_players")
+            if "chart_sel" not in st.session_state:
+                st.session_state.chart_sel = ranked[:6]  # start with the top 6
+            shown = [p for p in st.session_state.chart_sel if p in ranked]
+            st.caption("Tap a player to show or hide their line.")
+            button_grid("grid_chart", [(p, f"chart_{p}", p in shown, toggle_chart, (p,)) for p in ranked])
             tl = tl[tl["Player"].isin(shown)]
             if shown:
                 # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
@@ -394,7 +448,7 @@ if page == "Leaderboard":
                          .properties(width="container", height=320))
                 st.altair_chart(chart)
             else:
-                st.info("Pick at least one player to show.")
+                st.info("Tap at least one player to show their rating history.")
     rating_chart()
 
     if authed:
@@ -447,16 +501,6 @@ elif page == "Enter Match":
     elif len(players) < 2:
         st.info("Add at least two players first.")
     else:
-        st.markdown("""
-<style>
-[class*="st-key-grid_"] [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.4rem !important; }
-[class*="st-key-grid_"] [data-testid="stColumn"], [class*="st-key-grid_"] [data-testid="column"] {
-    min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
-[class*="st-key-grid_"] button { min-height: 2.8rem; padding: 0.25rem 0.2rem; }
-[class*="st-key-grid_"] button p { font-size: 0.9rem; line-height: 1.1; overflow-wrap: anywhere; }
-.st-key-grid_s1 button p, .st-key-grid_s2 button p { font-size: 1.15rem; font-weight: 600; }
-</style>
-""", unsafe_allow_html=True)
         @st.fragment
         def enter_match():
             sel = [p for p in st.session_state.get("m_players", []) if p in players]
@@ -527,18 +571,22 @@ elif page == "Match History":
                     e2 = c2.selectbox("Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
                     s1 = c1.number_input("Player 1 Score", 0, max(15, m["score"][0]), m["score"][0], step=1, key=f"s1_{i}")
                     s2 = c2.number_input("Player 2 Score", 0, max(15, m["score"][1]), m["score"][1], step=1, key=f"s2_{i}")
-                    if st.form_submit_button("Save Changes"):
-                        if e1 == e2:
-                            st.error("Pick two different players.")
-                        elif not valid_game(s1, s2):
-                            st.error(f"{s1}-{s2} isn't valid. {SCORE_RULES}")
-                        else:
-                            m.update(p1=e1, p2=e2, score=[s1, s2], bonus=shutout_bonus(s1, s2))
-                            recompute(players, matches)
-                            save(data, sha, f"Edit match: {e1} {s1}-{s2} {e2}")
-                            st.session_state.flash = "Match updated and ratings recalculated."
-                            st.rerun()
-                if st.checkbox("I Want To Delete This Match", key=f"del_ok_{i}") and st.button("Delete Match"):
+                    with st.container(key="grid_editbtns"):
+                        b1, b2 = st.columns(2)
+                        save_clicked = form_btn(b1, "Save Changes")
+                        delete_clicked = form_btn(b2, "Delete")
+                if save_clicked:
+                    if e1 == e2:
+                        st.error("Pick two different players.")
+                    elif not valid_game(s1, s2):
+                        st.error(f"{s1}-{s2} isn't valid. {SCORE_RULES}")
+                    else:
+                        m.update(p1=e1, p2=e2, score=[s1, s2], bonus=shutout_bonus(s1, s2))
+                        recompute(players, matches)
+                        save(data, sha, f"Edit match: {e1} {s1}-{s2} {e2}")
+                        st.session_state.flash = "Match updated and ratings recalculated."
+                        st.rerun()
+                elif delete_clicked:
                     matches.pop(i)
                     recompute(players, matches)
                     save(data, sha, "Delete match")
