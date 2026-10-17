@@ -345,7 +345,7 @@ def bounty_banner():
         f'normal rating gain. {d}, and the bounty grows with every defence.</span></div>', unsafe_allow_html=True)
 
 
-RACE_ROW_H = 34
+RACE_ROW_H = 46
 RACE_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -355,12 +355,14 @@ RACE_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8">
 html,body{margin:0;padding:0;overflow:hidden;background:transparent;color:var(--fg);
  font-family:"Source Sans Pro","Source Sans 3",-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:15px}
 #board{position:relative;width:100%}
-.row{position:absolute;left:0;right:0;display:flex;align-items:center;transition:top var(--dur) ease,opacity .35s ease}
-.rank{width:22px;text-align:right;margin-right:8px;font-weight:700;opacity:.65}
-.name{width:var(--lw);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:8px;font-weight:600}
-.track{position:relative;flex:1;height:100%;margin-right:52px}
-.bar{position:absolute;left:0;top:16%;height:68%;border-radius:5px;transition:width var(--dur) ease}
-.val{position:absolute;top:50%;transform:translateY(-50%);font-weight:700;font-variant-numeric:tabular-nums;transition:left var(--dur) ease}
+.row{position:absolute;left:0;right:0;transition:top var(--dur) ease,opacity .35s ease}
+.top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.who{display:flex;align-items:baseline;min-width:0}
+.rank{width:22px;text-align:right;margin-right:8px;font-weight:700;opacity:.65;flex:none}
+.name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.val{font-weight:700;font-variant-numeric:tabular-nums;flex:none}
+.track{height:10px;margin:5px 0 0 30px;border-radius:5px;background:rgba(128,128,128,.16)}
+.bar{height:100%;border-radius:5px;transition:width var(--dur) ease}
 #cap{min-height:1.4em;margin:10px 0 8px;opacity:.8;font-size:.9rem;text-align:center}
 .ctl{display:flex;align-items:center;gap:8px}
 .sp{margin-left:auto;display:flex;gap:6px}
@@ -377,7 +379,6 @@ const D = __DATA__;
 const ROW = __ROW__, N = D.frames.length - 1;
 const root = document.documentElement, board = document.getElementById('board'), cap = document.getElementById('cap');
 const slider = document.getElementById('slider'), playBtn = document.getElementById('play');
-root.style.setProperty('--lw', D.labelW + 'px');
 board.style.height = (D.topN * ROW) + 'px';
 slider.max = N;
 try {  // follow the app's text colour (this frame can read the page it sits in)
@@ -388,13 +389,15 @@ try {  // follow the app's text colour (this frame can read the page it sits in)
 const rows = {};
 D.order.forEach(n => {
   const el = document.createElement('div'); el.className = 'row';
-  el.style.height = (ROW - 6) + 'px'; el.style.top = (D.topN * ROW) + 'px'; el.style.opacity = 0;
+  el.style.height = (ROW - 8) + 'px'; el.style.top = (D.topN * ROW) + 'px'; el.style.opacity = 0;
+  const top = document.createElement('div'); top.className = 'top';
+  const who = document.createElement('div'); who.className = 'who';
   const rank = document.createElement('div'); rank.className = 'rank';
   const name = document.createElement('div'); name.className = 'name'; name.textContent = n; name.title = n;
+  const val = document.createElement('div'); val.className = 'val';
   const track = document.createElement('div'); track.className = 'track';
   const bar = document.createElement('div'); bar.className = 'bar'; bar.style.background = D.colors[n]; bar.style.width = '0%';
-  const val = document.createElement('div'); val.className = 'val';
-  track.append(bar, val); el.append(rank, name, track); board.append(el);
+  who.append(rank, name); top.append(who, val); track.append(bar); el.append(top, track); board.append(el);
   rows[n] = {el, rank, bar, val, cur: null, raf: 0};
 });
 
@@ -421,11 +424,11 @@ function render(k, dur) {
     if (n in pos && pos[n] < D.topN) {
       const p = pct(f[n]);
       r.el.style.top = (pos[n] * ROW) + 'px'; r.el.style.opacity = 1;
-      r.bar.style.width = p + '%'; r.val.style.left = 'calc(' + p + '% + 6px)';
+      r.bar.style.width = p + '%';
       r.rank.textContent = pos[n] + 1; tween(r, f[n], dur);
     } else {
       r.el.style.top = (D.topN * ROW) + 'px'; r.el.style.opacity = 0;
-      r.bar.style.width = '0%'; r.val.style.left = '6px'; r.cur = null;
+      r.bar.style.width = '0%'; r.cur = null;
     }
   });
   slider.value = k;
@@ -466,10 +469,9 @@ def race_html(matches):
     data = {"frames": frames, "order": order, "topN": top_n,
             "info": [[m["date"], m["p1"], m["p2"], m["score"][0], m["score"][1]] for m in matches],
             "colors": {p: player_color(p) for p in order},
-            "lo": int((min(allr) - 30) // 50 * 50), "hi": int(-(-(max(allr) + 30) // 50) * 50),
-            "labelW": round(min(max(len(n) for n in order), 22) * 8.4 + 4)}
+            "lo": int((min(allr) - 30) // 50 * 50), "hi": int(-(-(max(allr) + 30) // 50) * 50)}
     doc = RACE_TEMPLATE.replace("__DATA__", json.dumps(data).replace("</", "<\\/")).replace("__ROW__", str(RACE_ROW_H))
-    return doc, top_n * RACE_ROW_H + 150
+    return doc, top_n * RACE_ROW_H + 105
 
 
 CARD_LABELS = ("Attack", "Defence", "Winning", "Clutch", "Form", "Stamina")
@@ -977,5 +979,5 @@ else:
             st.info(f"{who} hasn't played yet, so there's no card to show.")
             return
         st.html(card_html(who, c))
-        st.html(radar_svg(c["stats"], player_color(who)))
+        st.markdown(radar_svg(c["stats"], player_color(who)), unsafe_allow_html=True)
     trading_cards()
