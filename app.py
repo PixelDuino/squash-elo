@@ -16,6 +16,10 @@ import streamlit.components.v1 as components
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
 # Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
+# Every player keeps one colour on the rating graphs: colours are handed out in the order players were added.
+PLAYER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#17becf", "#bcbd22",
+                 "#393b79", "#e6550d", "#31a354", "#756bb1", "#843c39", "#d6a300", "#00a6a6", "#c51b8a", "#637939",
+                 "#5254a3", "#7f7f7f"]
 PER_WEIGHTS = {"win": 0.30,   # win percentage
                "diff": 0.25,  # average point difference per game (points won minus points lost)
                "off": 0.15,   # average points won per game
@@ -105,9 +109,36 @@ def rating_timeline(matches):
     return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
 
 
+def rating_timeline_by_match(matches):
+    """READ-ONLY: every match is one step along the bottom, shared by all players, so the curves line up in time.
+    A player's line starts at their first match and stays flat while they sit out."""
+    latest, rows = {}, []
+    for step, m in enumerate(matches, 1):
+        for who, key in ((m["p1"], "p1"), (m["p2"], "p2")):
+            if who not in latest:
+                rows.append({"Game": step - 1, "Player": who, "Rating": m[key + "_before"]})
+            latest[who] = m[key + "_after"]
+        for who, r in latest.items():
+            rows.append({"Game": step, "Player": who, "Rating": r})
+    return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
+
+
+def toggle_by_match():
+    st.session_state.chart_by_match = not st.session_state.get("chart_by_match", False)
+
+
+def player_color(name):
+    order = list(players)
+    return PLAYER_COLORS[order.index(name) % len(PLAYER_COLORS)] if name in order else "#7f7f7f"
+
+
 def rename_player(players, matches, old, new):
-    """Give a player a new name everywhere (ratings and every match they appear in)."""
-    players[new] = players.pop(old)
+    """Give a player a new name everywhere (ratings and every match they appear in). Keeps their place in the
+    player order, so their graph colour doesn't change."""
+    items = list(players.items())
+    players.clear()
+    for k, v in items:
+        players[new if k == old else k] = v
     for m in matches:
         for k in ("p1", "p2", "winner"):
             if m[k] == old:
@@ -377,6 +408,10 @@ st.markdown("""
 [class*="st-key-grid_"] button { min-height: 2.8rem; padding: 0.25rem 0.2rem; }
 [class*="st-key-grid_"] button p { font-size: 0.9rem; line-height: 1.1; overflow-wrap: anywhere; }
 .st-key-grid_s1 button p, .st-key-grid_s2 button p { font-size: 1.15rem; font-weight: 600; }
+/* heading with a small round check circle right next to it */
+.st-key-rhead [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; align-items: center !important; gap: 0.6rem !important; }
+.st-key-rhead [data-testid="stColumn"], .st-key-rhead [data-testid="column"] { min-width: 0 !important; flex: 0 0 auto !important; width: auto !important; }
+.st-key-rhead button { border-radius: 50% !important; width: 1.9rem !important; height: 1.9rem !important; min-height: 1.9rem !important; padding: 0 !important; }
 /* keep the invisible helper script below from adding blank space */
 [data-testid="stElementContainer"]:has(iframe[height="0"]), [data-testid="stElementContainer"]:has([data-testid="stHtml"]) { position: absolute; width: 0; height: 0; overflow: hidden; }
 </style>
@@ -428,8 +463,13 @@ if page == "Leaderboard":
     @st.fragment
     def rating_chart():
         if matches:
-            st.subheader("Rating History")
-            tl = rating_timeline(matches)
+            by_match = st.session_state.get("chart_by_match", False)
+            with st.container(key="rhead"):
+                c_title, c_check = st.columns(2)
+                c_title.subheader("Rating History")
+                c_check.button("\u2713" if by_match else "\u00a0", key="chart_by_match_btn",
+                               type="primary" if by_match else "secondary", on_click=toggle_by_match)
+            tl = rating_timeline_by_match(matches) if by_match else rating_timeline(matches)
             ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
             if "chart_sel" not in st.session_state:
                 st.session_state.chart_sel = ranked[:6]  # start with the top 6
@@ -440,13 +480,21 @@ if page == "Leaderboard":
             if shown:
                 # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
                 chart = (alt.Chart(tl).mark_line(point=True)
-                         .encode(x=alt.X("Game:Q", title="Games Played By Each Player",
-                                         axis=alt.Axis(tickMinStep=1, format="d")),
+                         .encode(x=alt.X("Game:Q", axis=alt.Axis(tickMinStep=1, format="d"),
+                                         title="Matches Played (All Players)" if by_match else "Games Played By Each Player"),
                                  y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
-                                 color=alt.Color("Player:N", legend=alt.Legend(orient="bottom", title=None)),
-                                 tooltip=["Player:N", "Game:Q", alt.Tooltip("Rating:Q", format=".0f")])
+                                 color=alt.Color("Player:N", legend=None,
+                                                 scale=alt.Scale(domain=shown, range=[player_color(p) for p in shown])),
+                                 tooltip=["Player:N", alt.Tooltip("Game:Q", title="Match" if by_match else "Game"),
+                                          alt.Tooltip("Rating:Q", format=".0f")])
                          .properties(width="container", height=320))
                 st.altair_chart(chart)
+                # Our own key under the graph: wraps onto more lines as needed, so no name is ever cut off.
+                st.markdown('<div style="display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:4px;">' + "".join(
+                    f'<span style="display:inline-flex;align-items:center;">'
+                    f'<span style="width:12px;height:12px;border-radius:50%;background:{player_color(p)};'
+                    f'display:inline-block;margin-right:6px;"></span>{html.escape(p)}</span>' for p in shown) + "</div>",
+                    unsafe_allow_html=True)
             else:
                 st.info("Tap at least one player to show their rating history.")
     rating_chart()
