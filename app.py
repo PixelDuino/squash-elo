@@ -25,9 +25,6 @@ PER_WEIGHTS = {"win": 0.30,   # win percentage
                "dfn": 0.15,   # average points lost per game (fewer is better)
                "sos": 0.15}   # strength of schedule: average rating of opponents played
 SHUTOUT_BONUS = 5  # extra rating points for winning 11-0 (the loser only gets the normal drop)
-BOUNTY_BASE = 3  # bounty on the champion (the number 1 player) to start with
-BOUNTY_STEP = 1  # extra bounty for every match the champion wins while staying number 1
-BOUNTY_MAX = 10  # the bounty never grows past this
 CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
 HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
@@ -84,59 +81,17 @@ def play(r1, r2, a, b, bonus=0):
     return (n1 + bonus, n2) if a > b else (n1, n2 + bonus)
 
 
-def champion_of(ratings):
-    """The number 1 player: strictly higher than everyone else (a tie at the top means no champion)."""
-    ranked = sorted(ratings.items(), key=lambda kv: -kv[1])
-    return ranked[0][0] if len(ranked) > 1 and ranked[0][1] > ranked[1][1] + 1e-9 else None
-
-
-def bounty_amount(defences):
-    return min(BOUNTY_MAX, BOUNTY_BASE + BOUNTY_STEP * defences)
-
-
-def bounty_claim(champ, p1, p2, winner, defences):
-    """Extra rating paid to the winner when they beat the champion (0 in every other match)."""
-    return bounty_amount(defences) if champ in (p1, p2) and winner != champ else 0
-
-
-def league_state(matches):
-    """READ-ONLY: everyone's latest rating, and how many times in a row the champion has defended the top spot.
-    Replayed from the saved matches. Matches saved before bounties existed have no "bounty" entry and don't count."""
-    latest, defences = {}, 0
-    for m in matches:
-        champ = champion_of({**latest, m["p1"]: m["p1_before"], m["p2"]: m["p2_before"]})
-        if "bounty" in m and champ in (m["p1"], m["p2"]):
-            defences = defences + 1 if m["winner"] == champ else 0
-        latest[m["p1"]], latest[m["p2"]] = m["p1_after"], m["p2_after"]
-        if champion_of(latest) != champ:
-            defences = 0
-    return latest, defences
-
-
 def recompute(players, matches):
-    """Replay every match in order from the starting rating (11-0 bonuses and bounties included).
+    """Replay every match in order from the starting rating (11-0 bonuses included).
     Used after editing or deleting a match."""
     for p in players:
         players[p] = START_RATING
-    latest, defences = {}, 0
     for m in matches:
         a, b = m["score"]
-        p1, p2 = m["p1"], m["p2"]
-        r1, r2 = players[p1], players[p2]
-        winner = p1 if a > b else p2
-        champ = champion_of({**latest, p1: r1, p2: r2})
-        era = "bounty" in m  # matches saved before bounties existed never paid one
-        bounty = bounty_claim(champ, p1, p2, winner, defences) if era else 0
-        n1, n2 = play(r1, r2, a, b, m.get("bonus", 0) + bounty)
-        m.update(p1_before=r1, p1_after=n1, p2_before=r2, p2_after=n2, winner=winner)
-        if era:
-            m["bounty"] = bounty
-            if champ in (p1, p2):
-                defences = defences + 1 if winner == champ else 0
-        players[p1], players[p2] = n1, n2
-        latest[p1], latest[p2] = n1, n2
-        if champion_of(latest) != champ:
-            defences = 0
+        r1, r2 = players[m["p1"]], players[m["p2"]]
+        n1, n2 = play(r1, r2, a, b, m.get("bonus", 0))  # matches saved before the bonus existed have no bonus
+        m.update(p1_before=r1, p1_after=n1, p2_before=r2, p2_after=n2, winner=m["p1"] if a > b else m["p2"])
+        players[m["p1"]], players[m["p2"]] = n1, n2
 
 
 def rating_timeline(matches):
@@ -330,21 +285,6 @@ def toggle_player(name):
     st.session_state.m_players = [p for p in sel if p != name] if name in sel else (sel + [name])[-2:]
 
 
-def bounty_banner():
-    """A banner naming the champion and the bounty on their head."""
-    latest, defences = league_state(matches)
-    champ = champion_of(latest)
-    if not champ:
-        return
-    d = f"{defences} defence{'' if defences == 1 else 's'} in a row"
-    st.markdown(
-        '<div style="border-left:4px solid #d6a300;background:rgba(214,163,0,0.12);border-radius:4px;'
-        'padding:8px 12px;margin:4px 0 10px 0;">'
-        f'<b>Bounty On {html.escape(champ)}: +{bounty_amount(defences)} Rating</b><br>'
-        '<span style="opacity:0.75;font-size:0.9rem;">Beat the number 1 player and earn this bonus on top of the '
-        f'normal rating gain. {d}, and the bounty grows with every defence.</span></div>', unsafe_allow_html=True)
-
-
 RACE_ROW_H = 46
 RACE_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -474,37 +414,47 @@ def race_html(matches):
     return doc, top_n * RACE_ROW_H + 105
 
 
-CARD_LABELS = ("Attack", "Defence", "Winning", "Clutch", "Form", "Stamina")
+CARD_LABELS = ("Attack", "Defence", "Winning", "Form")
+
+
+def recent_swing(name):
+    """Average rating change per game over a player's last 5 games (None if they haven't played)."""
+    games = [(m, "p1" if m["p1"] == name else "p2") for m in matches if name in (m["p1"], m["p2"])][-5:]
+    return sum(m[me + "_after"] - m[me + "_before"] for m, me in games) / len(games) if games else None
 
 
 def card_stats(name):
-    """READ-ONLY: a FIFA-style card for one player. Six stats from 0 to 99, and the overall (OVR) is their average.
-    Attack = points scored per game, Defence = points conceded per game (fewer is better), Winning = win rate,
-    Clutch = win rate in close games, Form = rating change per game over the last 5 games, Stamina = games played."""
+    """READ-ONLY: a FIFA-style card for one player. Four stats from 0 to 99, and the overall (OVR) is their average.
+    Attack  = points scored per game, out of 11 (0 points is 0, 11 or more is 99).
+    Defence = points conceded per game: 11 or more is 50, 5 or fewer is 99, in a straight line between.
+    Winning = win rate, lifted so 0% is 50 and 100% is 99.
+    Form    = recent rating change compared with everyone else: the hottest player gets 99, the coldest 50."""
     games = [(m, "p1" if m["p1"] == name else "p2") for m in matches if name in (m["p1"], m["p2"])]
     if not games:
         return None
     g = len(games)
-    f = a = w = close = close_w = 0
+    f = a = w = 0
     for m, me in games:
         mine, theirs = (m["score"][0], m["score"][1]) if me == "p1" else (m["score"][1], m["score"][0])
         f, a, w = f + mine, a + theirs, w + (mine > theirs)
-        if abs(mine - theirs) <= CLOSE_MARGIN:
-            close, close_w = close + 1, close_w + (mine > theirs)
-    last = games[-5:]
-    swing = sum(m[me + "_after"] - m[me + "_before"] for m, me in last) / len(last)
-    cl = lambda x: max(0, min(99, round(x)))
+    swings = {p: recent_swing(p) for p in players}
+    swings = [v for v in swings.values() if v is not None]
+    lo, hi = min(swings), max(swings)
+    form = 75 if hi - lo < 1e-9 else 50 + 49 * (recent_swing(name) - lo) / (hi - lo)  # nobody to compare with: 75
+    cl = lambda x: max(0, min(99, int(x + 0.5)))  # halves round up
     stats = dict(zip(CARD_LABELS, (
-        cl((f / g - 5) / 6.5 * 99), cl((11.5 - a / g) / 6.5 * 99), cl(w / g * 99),
-        cl((close_w + 1) / (close + 2) * 99), cl((swing + 16) / 32 * 99), cl(min(g, 30) / 30 * 99))))
+        cl(f / g / 11 * 99),
+        cl(50 + 49 * max(0, min(1, (11 - a / g) / 6))),
+        cl(50 + 49 * w / g),
+        cl(form))))
     ranking = sorted(players, key=lambda x: -players[x])
-    return {"stats": stats, "ovr": round(sum(stats.values()) / len(stats)), "games": g, "wins": w,
+    return {"stats": stats, "ovr": int(sum(stats.values()) / len(stats) + 0.5), "games": g, "wins": w,
             "rating": players[name], "rank": ranking.index(name) + 1}
 
 
 def card_tier(ovr):
-    return ("Elite", "#3fb8af") if ovr >= 80 else ("Gold", "#e6c200") if ovr >= 65 else \
-           ("Silver", "#c0c0c0") if ovr >= 50 else ("Bronze", "#cd7f32")
+    return ("Elite", "#3fb8af") if ovr >= 85 else ("Gold", "#e6c200") if ovr >= 74 else \
+           ("Silver", "#c0c0c0") if ovr >= 62 else ("Bronze", "#cd7f32")
 
 
 def card_html(name, c):
@@ -675,8 +625,6 @@ page = st.radio("Page", pages, horizontal=True, key="page", label_visibility="co
 
 # ----- leaderboard -----
 if page == "Leaderboard":
-    if matches:
-        bounty_banner()
     stats = {p: [0, 0] for p in players}
     for m in matches:
         loser = m["p2"] if m["winner"] == m["p1"] else m["p1"]
@@ -782,7 +730,6 @@ elif page == "Enter Match":
             st.session_state.m_players = sel
             st.caption("Games go to 11, win by 2. At 14-14 the next point wins (15-14). "
                        f"Winning 11-0 earns a +{SHUTOUT_BONUS} rating bonus.")
-            bounty_banner()
             st.markdown("**Tap Two Players**")
             button_grid("grid_players", [(n, f"pick_{n}", n in sel, toggle_player, (n,)) for n in sorted(players)])
             st.caption(f"Player 1: {sel[0] if sel else '-'}   |   Player 2: {sel[1] if len(sel) > 1 else '-'}")
@@ -806,21 +753,16 @@ elif page == "Enter Match":
                     else:
                         r1, r2 = players[p1], players[p2]
                         bonus = shutout_bonus(s1, s2)
-                        winner = p1 if s1 > s2 else p2
-                        latest, defences = league_state(matches)
-                        bounty = bounty_claim(champion_of({**latest, p1: r1, p2: r2}), p1, p2, winner, defences)
-                        n1, n2 = play(r1, r2, s1, s2, bonus + bounty)
+                        n1, n2 = play(r1, r2, s1, s2, bonus)
                         players[p1], players[p2] = n1, n2
                         matches.append({
                             "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "p1": p1, "p2": p2,
-                            "score": [s1, s2], "winner": winner, "bonus": bonus, "bounty": bounty,
+                            "score": [s1, s2], "winner": p1 if s1 > s2 else p2, "bonus": bonus,
                             "p1_before": r1, "p1_after": n1, "p2_before": r2, "p2_after": n2})
                         save(data, sha, f"{p1} {s1}-{s2} {p2}")
                         msg = f"{p1}: {r1:.0f} → {n1:.0f}  |  {p2}: {r2:.0f} → {n2:.0f}"
                         if bonus:
-                            msg += f"  |  11-0 bonus: +{bonus} to {winner}"
-                        if bounty:
-                            msg += f"  |  Bounty claimed: +{bounty} to {winner}"
+                            msg += f"  |  11-0 bonus: +{bonus} to {p1 if s1 > s2 else p2}"
                         clear_entry()
                         st.session_state.flash = msg
                         st.rerun()
