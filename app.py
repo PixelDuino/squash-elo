@@ -109,24 +109,6 @@ def rating_timeline(matches):
     return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
 
 
-def rating_timeline_by_match(matches):
-    """READ-ONLY: every match is one step along the bottom, shared by all players, so the curves line up in time.
-    A player's line starts at their first match and stays flat while they sit out."""
-    latest, rows = {}, []
-    for step, m in enumerate(matches, 1):
-        for who, key in ((m["p1"], "p1"), (m["p2"], "p2")):
-            if who not in latest:
-                rows.append({"Game": step - 1, "Player": who, "Rating": m[key + "_before"]})
-            latest[who] = m[key + "_after"]
-        for who, r in latest.items():
-            rows.append({"Game": step, "Player": who, "Rating": r})
-    return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
-
-
-def toggle_by_match():
-    st.session_state.chart_by_match = not st.session_state.get("chart_by_match", False)
-
-
 def player_color(name):
     order = list(players)
     return PLAYER_COLORS[order.index(name) % len(PLAYER_COLORS)] if name in order else "#7f7f7f"
@@ -408,12 +390,6 @@ st.markdown("""
 [class*="st-key-grid_"] button { min-height: 2.8rem; padding: 0.25rem 0.2rem; }
 [class*="st-key-grid_"] button p { font-size: 0.9rem; line-height: 1.1; overflow-wrap: anywhere; }
 .st-key-grid_s1 button p, .st-key-grid_s2 button p { font-size: 1.15rem; font-weight: 600; }
-/* heading with a small round check circle right next to it */
-.st-key-rhead [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; align-items: center !important; gap: 0.6rem !important; }
-.st-key-rhead [data-testid="stColumn"], .st-key-rhead [data-testid="column"] { min-width: 0 !important; flex: 0 0 auto !important; width: auto !important; }
-.st-key-rhead button { border-radius: 50% !important; width: 1.9rem !important; height: 1.9rem !important; min-height: 1.9rem !important; padding: 0 !important; }
-/* keep the invisible helper script below from adding blank space */
-[data-testid="stElementContainer"]:has(iframe[height="0"]), [data-testid="stElementContainer"]:has([data-testid="stHtml"]) { position: absolute; width: 0; height: 0; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -463,13 +439,8 @@ if page == "Leaderboard":
     @st.fragment
     def rating_chart():
         if matches:
-            by_match = st.session_state.get("chart_by_match", False)
-            with st.container(key="rhead"):
-                c_title, c_check = st.columns(2)
-                c_title.subheader("Rating History")
-                c_check.button("\u2713" if by_match else "\u00a0", key="chart_by_match_btn",
-                               type="primary" if by_match else "secondary", on_click=toggle_by_match)
-            tl = rating_timeline_by_match(matches) if by_match else rating_timeline(matches)
+            st.subheader("Rating History")
+            tl = rating_timeline(matches)
             ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
             if "chart_sel" not in st.session_state:
                 st.session_state.chart_sel = ranked[:6]  # start with the top 6
@@ -481,12 +452,11 @@ if page == "Leaderboard":
                 # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
                 chart = (alt.Chart(tl).mark_line(point=True)
                          .encode(x=alt.X("Game:Q", axis=alt.Axis(tickMinStep=1, format="d"),
-                                         title="Matches Played (All Players)" if by_match else "Games Played By Each Player"),
+                                         title="Games Played By Each Player"),
                                  y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
                                  color=alt.Color("Player:N", legend=None,
                                                  scale=alt.Scale(domain=shown, range=[player_color(p) for p in shown])),
-                                 tooltip=["Player:N", alt.Tooltip("Game:Q", title="Match" if by_match else "Game"),
-                                          alt.Tooltip("Rating:Q", format=".0f")])
+                                 tooltip=["Player:N", "Game:Q", alt.Tooltip("Rating:Q", format=".0f")])
                          .properties(width="container", height=320))
                 st.altair_chart(chart)
                 # Our own key under the graph: wraps onto more lines as needed, so no name is ever cut off.
