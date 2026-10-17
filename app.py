@@ -11,7 +11,6 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
@@ -285,6 +284,14 @@ def toggle_player(name):
     st.session_state.m_players = [p for p in sel if p != name] if name in sel else (sel + [name])[-2:]
 
 
+def pick(container, label, options, **kw):
+    """A dropdown you can only tap, not type into, so no phone keyboard pops up."""
+    try:
+        return container.selectbox(label, options, filter_mode=None, **kw)
+    except TypeError:  # very old Streamlit without filter_mode
+        return container.selectbox(label, options, **kw)
+
+
 def toggle_chart(name):
     """Tap a player's tile to add or remove their line from the rating history graph."""
     sel = st.session_state.get("chart_sel", [])
@@ -393,26 +400,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Dropdowns can't be typed into (no phone keyboard pops up): mark every dropdown's search box read-only.
-# A tiny script runs in the page itself and re-applies this whenever a dropdown is drawn.
-NO_TYPE_JS = """
-function fix() {
-  document.querySelectorAll('div[data-baseweb="select"] input').forEach(function (i) {
-    i.setAttribute("inputmode", "none");
-    i.setAttribute("readonly", "readonly");
-    i.setAttribute("autocomplete", "off");
-  });
-}
-fix();
-new MutationObserver(fix).observe(document.body, {childList: true, subtree: true});
-"""
-try:
-    st.html(f"<script>if (!window.__noTypeSelects) {{ window.__noTypeSelects = true; {NO_TYPE_JS} }}</script>",
-            unsafe_allow_javascript=True)
-except TypeError:  # older Streamlit versions: run the same script from inside a hidden frame instead
-    components.html(
-        "<script>var w = window.parent; if (!w.__noTypeSelects) { w.__noTypeSelects = true; var s = w.document.createElement('script');"
-        " s.textContent = " + json.dumps(NO_TYPE_JS) + "; w.document.head.appendChild(s); }</script>", height=0)
 pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (["Awards"] if authed else [])
 if st.session_state.get("page") not in pages:
     st.session_state.page = "Leaderboard"
@@ -484,7 +471,7 @@ if page == "Leaderboard":
 
         if players:
             st.subheader("Manage Players")
-            who = st.selectbox("Player", sorted(players), key="manage_who")
+            who = pick(st, "Player", sorted(players), key="manage_who")
             with st.form("rename", clear_on_submit=True):
                 new = st.text_input("New Name")
                 if st.form_submit_button("Rename Player"):
@@ -577,16 +564,16 @@ elif page == "Match History":
                 st.subheader("Edit Or Delete A Match")
                 st.caption("Ratings for every later match are recalculated automatically.")
                 order = list(range(len(matches) - 1, -1, -1))  # newest first
-                i = st.selectbox(
-                    "Match", order, key="edit_idx",
+                i = pick(
+                    st, "Match", order, key="edit_idx",
                     format_func=lambda k: f'#{k + 1}  |  {matches[k]["date"]}  |  {matches[k]["p1"]} '
                                           f'{matches[k]["score"][0]}-{matches[k]["score"][1]} {matches[k]["p2"]}')
                 m = matches[i]
                 names = sorted(players)
                 with st.form(f"edit_{i}"):
                     c1, c2 = st.columns(2)
-                    e1 = c1.selectbox("Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
-                    e2 = c2.selectbox("Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
+                    e1 = pick(c1, "Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
+                    e2 = pick(c2, "Player 2", names, index=names.index(m["p2"]), key=f"e2_{i}")
                     s1 = c1.number_input("Player 1 Score", 0, max(15, m["score"][0]), m["score"][0], step=1, key=f"s1_{i}")
                     s2 = c2.number_input("Player 2 Score", 0, max(15, m["score"][1]), m["score"][1], step=1, key=f"s2_{i}")
                     with st.container(key="grid_editbtns"):
@@ -619,7 +606,7 @@ elif page == "Player History":
     @st.fragment
     def player_history():
         if players:
-            name = st.selectbox("Player", sorted(players), key="hist_player")
+            name = pick(st, "Player", sorted(players), key="hist_player")
             ratings, hist = [START_RATING], []
             for m in matches:
                 if name not in (m["p1"], m["p2"]):
@@ -658,7 +645,7 @@ elif page == "Player History":
             if not others:
                 st.info("Add another player to see head to head stats.")
             else:
-                opp = st.selectbox("Versus", others, key="hist_opp")
+                opp = pick(st, "Versus", others, key="hist_opp")
                 h2h = [m for m in matches if {m["p1"], m["p2"]} == {name, opp}]
                 if not h2h:
                     st.info(f"{name} and {opp} haven't played each other yet.")
