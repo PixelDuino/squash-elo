@@ -25,6 +25,9 @@ PER_WEIGHTS = {"win": 0.30,   # win percentage
                "dfn": 0.15,   # average points lost per game (fewer is better)
                "sos": 0.15}   # strength of schedule: average rating of opponents played
 SHUTOUT_BONUS = 5  # extra rating points for winning 11-0 (the loser only gets the normal drop)
+BOUNTY_BASE = 3  # bounty on the champion (the number 1 player) to start with
+BOUNTY_STEP = 1  # extra bounty for every match the champion wins while staying number 1
+BOUNTY_MAX = 10  # the bounty never grows past this
 CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
 HEAD = {"Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
@@ -81,16 +84,59 @@ def play(r1, r2, a, b, bonus=0):
     return (n1 + bonus, n2) if a > b else (n1, n2 + bonus)
 
 
+def champion_of(ratings):
+    """The number 1 player: strictly higher than everyone else (a tie at the top means no champion)."""
+    ranked = sorted(ratings.items(), key=lambda kv: -kv[1])
+    return ranked[0][0] if len(ranked) > 1 and ranked[0][1] > ranked[1][1] + 1e-9 else None
+
+
+def bounty_amount(defences):
+    return min(BOUNTY_MAX, BOUNTY_BASE + BOUNTY_STEP * defences)
+
+
+def bounty_claim(champ, p1, p2, winner, defences):
+    """Extra rating paid to the winner when they beat the champion (0 in every other match)."""
+    return bounty_amount(defences) if champ in (p1, p2) and winner != champ else 0
+
+
+def league_state(matches):
+    """READ-ONLY: everyone's latest rating, and how many times in a row the champion has defended the top spot.
+    Replayed from the saved matches. Matches saved before bounties existed have no "bounty" entry and don't count."""
+    latest, defences = {}, 0
+    for m in matches:
+        champ = champion_of({**latest, m["p1"]: m["p1_before"], m["p2"]: m["p2_before"]})
+        if "bounty" in m and champ in (m["p1"], m["p2"]):
+            defences = defences + 1 if m["winner"] == champ else 0
+        latest[m["p1"]], latest[m["p2"]] = m["p1_after"], m["p2_after"]
+        if champion_of(latest) != champ:
+            defences = 0
+    return latest, defences
+
+
 def recompute(players, matches):
-    """Replay every match in order from the starting rating. Used after editing or deleting a match."""
+    """Replay every match in order from the starting rating (11-0 bonuses and bounties included).
+    Used after editing or deleting a match."""
     for p in players:
         players[p] = START_RATING
+    latest, defences = {}, 0
     for m in matches:
         a, b = m["score"]
-        r1, r2 = players[m["p1"]], players[m["p2"]]
-        n1, n2 = play(r1, r2, a, b, m.get("bonus", 0))  # matches saved before the bonus existed have no bonus
-        m.update(p1_before=r1, p1_after=n1, p2_before=r2, p2_after=n2, winner=m["p1"] if a > b else m["p2"])
-        players[m["p1"]], players[m["p2"]] = n1, n2
+        p1, p2 = m["p1"], m["p2"]
+        r1, r2 = players[p1], players[p2]
+        winner = p1 if a > b else p2
+        champ = champion_of({**latest, p1: r1, p2: r2})
+        era = "bounty" in m  # matches saved before bounties existed never paid one
+        bounty = bounty_claim(champ, p1, p2, winner, defences) if era else 0
+        n1, n2 = play(r1, r2, a, b, m.get("bonus", 0) + bounty)
+        m.update(p1_before=r1, p1_after=n1, p2_before=r2, p2_after=n2, winner=winner)
+        if era:
+            m["bounty"] = bounty
+            if champ in (p1, p2):
+                defences = defences + 1 if winner == champ else 0
+        players[p1], players[p2] = n1, n2
+        latest[p1], latest[p2] = n1, n2
+        if champion_of(latest) != champ:
+            defences = 0
 
 
 def rating_timeline(matches):
@@ -128,7 +174,7 @@ def rename_player(players, matches, old, new):
 
 def forget_names():
     """Clear remembered dropdown choices that may still point at an old or removed name."""
-    for k in ("chart_sel", "hist_player", "hist_opp", "manage_who"):
+    for k in ("chart_sel", "hist_player", "hist_opp", "manage_who", "card_player"):
         st.session_state.pop(k, None)
 
 
@@ -284,6 +330,226 @@ def toggle_player(name):
     st.session_state.m_players = [p for p in sel if p != name] if name in sel else (sel + [name])[-2:]
 
 
+def bounty_banner():
+    """A banner naming the champion and the bounty on their head."""
+    latest, defences = league_state(matches)
+    champ = champion_of(latest)
+    if not champ:
+        return
+    d = f"{defences} defence{'' if defences == 1 else 's'} in a row"
+    st.markdown(
+        '<div style="border-left:4px solid #d6a300;background:rgba(214,163,0,0.12);border-radius:4px;'
+        'padding:8px 12px;margin:4px 0 10px 0;">'
+        f'<b>Bounty On {html.escape(champ)}: +{bounty_amount(defences)} Rating</b><br>'
+        '<span style="opacity:0.75;font-size:0.9rem;">Beat the number 1 player and earn this bonus on top of the '
+        f'normal rating gain. {d}, and the bounty grows with every defence.</span></div>', unsafe_allow_html=True)
+
+
+RACE_ROW_H = 34
+RACE_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--fg:#31333f;--line:rgba(128,128,128,.4);--accent:#ff4b4b;--dur:0ms}
+@media (prefers-color-scheme:dark){:root{--fg:#fafafa}}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;overflow:hidden;background:transparent;color:var(--fg);
+ font-family:"Source Sans Pro","Source Sans 3",-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:15px}
+#board{position:relative;width:100%}
+.row{position:absolute;left:0;right:0;display:flex;align-items:center;transition:top var(--dur) ease,opacity .35s ease}
+.rank{width:22px;text-align:right;margin-right:8px;font-weight:700;opacity:.65}
+.name{width:var(--lw);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:8px;font-weight:600}
+.track{position:relative;flex:1;height:100%;margin-right:52px}
+.bar{position:absolute;left:0;top:16%;height:68%;border-radius:5px;transition:width var(--dur) ease}
+.val{position:absolute;top:50%;transform:translateY(-50%);font-weight:700;font-variant-numeric:tabular-nums;transition:left var(--dur) ease}
+#cap{min-height:1.4em;margin:10px 0 8px;opacity:.8;font-size:.9rem;text-align:center}
+.ctl{display:flex;align-items:center;gap:8px}
+.sp{margin-left:auto;display:flex;gap:6px}
+button{font:inherit;color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:8px;padding:5px 11px;cursor:pointer}
+button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+input[type=range]{width:100%;margin:12px 0 0;accent-color:var(--accent)}
+</style></head><body>
+<div id="board"></div><div id="cap"></div>
+<div class="ctl"><button id="play">Play</button><button id="restart">Restart</button>
+<span class="sp"><button data-s="1500">Slow</button><button data-s="850" class="on">Normal</button><button data-s="420">Fast</button></span></div>
+<input id="slider" type="range" min="0" value="0">
+<script>
+const D = __DATA__;
+const ROW = __ROW__, N = D.frames.length - 1;
+const root = document.documentElement, board = document.getElementById('board'), cap = document.getElementById('cap');
+const slider = document.getElementById('slider'), playBtn = document.getElementById('play');
+root.style.setProperty('--lw', D.labelW + 'px');
+board.style.height = (D.topN * ROW) + 'px';
+slider.max = N;
+try {  // follow the app's text colour (this frame can read the page it sits in)
+  const c = getComputedStyle(parent.document.querySelector('.stApp') || parent.document.body).color;
+  if (c) root.style.setProperty('--fg', c);
+} catch (e) {}
+
+const rows = {};
+D.order.forEach(n => {
+  const el = document.createElement('div'); el.className = 'row';
+  el.style.height = (ROW - 6) + 'px'; el.style.top = (D.topN * ROW) + 'px'; el.style.opacity = 0;
+  const rank = document.createElement('div'); rank.className = 'rank';
+  const name = document.createElement('div'); name.className = 'name'; name.textContent = n; name.title = n;
+  const track = document.createElement('div'); track.className = 'track';
+  const bar = document.createElement('div'); bar.className = 'bar'; bar.style.background = D.colors[n]; bar.style.width = '0%';
+  const val = document.createElement('div'); val.className = 'val';
+  track.append(bar, val); el.append(rank, name, track); board.append(el);
+  rows[n] = {el, rank, bar, val, cur: null, raf: 0};
+});
+
+function tween(r, to, dur) {
+  cancelAnimationFrame(r.raf);
+  if (r.cur === null || dur === 0) { r.cur = to; r.val.textContent = Math.round(to); return; }
+  const from = r.cur, t0 = performance.now();
+  const frame = now => {
+    const t = Math.min(1, (now - t0) / dur);
+    r.cur = from + (to - from) * t; r.val.textContent = Math.round(r.cur);
+    if (t < 1) r.raf = requestAnimationFrame(frame);
+  };
+  r.raf = requestAnimationFrame(frame);
+}
+const pct = r => Math.max(3, Math.min(100, (r - D.lo) / (D.hi - D.lo) * 100));
+
+function render(k, dur) {
+  root.style.setProperty('--dur', dur + 'ms');
+  const f = D.frames[k];
+  const ranked = Object.keys(f).sort((a, b) => f[b] - f[a]);
+  const pos = {}; ranked.forEach((n, i) => pos[n] = i);
+  D.order.forEach(n => {
+    const r = rows[n];
+    if (n in pos && pos[n] < D.topN) {
+      const p = pct(f[n]);
+      r.el.style.top = (pos[n] * ROW) + 'px'; r.el.style.opacity = 1;
+      r.bar.style.width = p + '%'; r.val.style.left = 'calc(' + p + '% + 6px)';
+      r.rank.textContent = pos[n] + 1; tween(r, f[n], dur);
+    } else {
+      r.el.style.top = (D.topN * ROW) + 'px'; r.el.style.opacity = 0;
+      r.bar.style.width = '0%'; r.val.style.left = '6px'; r.cur = null;
+    }
+  });
+  slider.value = k;
+  if (k === 0) cap.textContent = 'Start: nobody has played yet';
+  else { const m = D.info[k - 1];
+    cap.textContent = 'Match ' + k + ' of ' + N + '  |  ' + String(m[0]).slice(0, 10) + '  |  ' + m[1] + ' ' + m[3] + '-' + m[4] + ' ' + m[2]; }
+}
+
+let step = N, timer = null, interval = 850;
+function stop() { clearInterval(timer); timer = null; playBtn.textContent = 'Play'; playBtn.classList.remove('on'); }
+function go(k, dur) { step = k; render(k, dur); }
+function tick() { go(step + 1, interval * 0.85); if (step >= N) stop(); }
+function start() {
+  if (step >= N) go(0, 0);
+  playBtn.textContent = 'Pause'; playBtn.classList.add('on');
+  clearInterval(timer); timer = setInterval(tick, interval);
+}
+playBtn.onclick = () => timer ? stop() : start();
+document.getElementById('restart').onclick = () => { stop(); go(0, 0); start(); };
+slider.oninput = () => { stop(); go(+slider.value, 180); };
+document.querySelectorAll('[data-s]').forEach(b => b.onclick = () => {
+  document.querySelectorAll('[data-s]').forEach(x => x.classList.remove('on')); b.classList.add('on');
+  interval = +b.dataset.s; if (timer) start();
+});
+render(N, 0);
+</script></body></html>"""
+
+
+def race_html(matches):
+    """READ-ONLY: a self-contained animated leaderboard race (plays in the browser, so it's smooth)."""
+    order = sorted({p for m in matches for p in (m["p1"], m["p2"])})
+    latest, frames = {}, [{}]
+    for m in matches:
+        latest[m["p1"]], latest[m["p2"]] = round(m["p1_after"], 1), round(m["p2_after"], 1)
+        frames.append(dict(latest))
+    allr = [r for f in frames for r in f.values()]
+    top_n = min(10, len(order))
+    data = {"frames": frames, "order": order, "topN": top_n,
+            "info": [[m["date"], m["p1"], m["p2"], m["score"][0], m["score"][1]] for m in matches],
+            "colors": {p: player_color(p) for p in order},
+            "lo": int((min(allr) - 30) // 50 * 50), "hi": int(-(-(max(allr) + 30) // 50) * 50),
+            "labelW": round(min(max(len(n) for n in order), 22) * 8.4 + 4)}
+    doc = RACE_TEMPLATE.replace("__DATA__", json.dumps(data).replace("</", "<\\/")).replace("__ROW__", str(RACE_ROW_H))
+    return doc, top_n * RACE_ROW_H + 150
+
+
+CARD_LABELS = ("Attack", "Defence", "Winning", "Clutch", "Form", "Stamina")
+
+
+def card_stats(name):
+    """READ-ONLY: a FIFA-style card for one player. Six stats from 0 to 99, and the overall (OVR) is their average.
+    Attack = points scored per game, Defence = points conceded per game (fewer is better), Winning = win rate,
+    Clutch = win rate in close games, Form = rating change per game over the last 5 games, Stamina = games played."""
+    games = [(m, "p1" if m["p1"] == name else "p2") for m in matches if name in (m["p1"], m["p2"])]
+    if not games:
+        return None
+    g = len(games)
+    f = a = w = close = close_w = 0
+    for m, me in games:
+        mine, theirs = (m["score"][0], m["score"][1]) if me == "p1" else (m["score"][1], m["score"][0])
+        f, a, w = f + mine, a + theirs, w + (mine > theirs)
+        if abs(mine - theirs) <= CLOSE_MARGIN:
+            close, close_w = close + 1, close_w + (mine > theirs)
+    last = games[-5:]
+    swing = sum(m[me + "_after"] - m[me + "_before"] for m, me in last) / len(last)
+    cl = lambda x: max(0, min(99, round(x)))
+    stats = dict(zip(CARD_LABELS, (
+        cl((f / g - 5) / 6.5 * 99), cl((11.5 - a / g) / 6.5 * 99), cl(w / g * 99),
+        cl((close_w + 1) / (close + 2) * 99), cl((swing + 16) / 32 * 99), cl(min(g, 30) / 30 * 99))))
+    ranking = sorted(players, key=lambda x: -players[x])
+    return {"stats": stats, "ovr": round(sum(stats.values()) / len(stats)), "games": g, "wins": w,
+            "rating": players[name], "rank": ranking.index(name) + 1}
+
+
+def card_tier(ovr):
+    return ("Elite", "#3fb8af") if ovr >= 80 else ("Gold", "#e6c200") if ovr >= 65 else \
+           ("Silver", "#c0c0c0") if ovr >= 50 else ("Bronze", "#cd7f32")
+
+
+def card_html(name, c):
+    tier, colour = card_tier(c["ovr"])
+    cells = "".join(f'<div style="display:flex;justify-content:space-between;"><span>{k}</span><b>{v}</b></div>'
+                    for k, v in c["stats"].items())
+    return (f'<div style="max-width:340px;margin:0 auto;border-radius:18px;padding:18px 20px;background:{colour};'
+            'color:#1b1b1b;">'
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+            f'<div><div style="font-size:3.2rem;font-weight:800;line-height:1;">{c["ovr"]}</div>'
+            '<div style="font-weight:700;letter-spacing:0.1em;font-size:0.8rem;">OVR</div></div>'
+            f'<div style="text-align:right;"><div style="font-size:1.5rem;font-weight:800;line-height:1.1;">{html.escape(name)}</div>'
+            f'<div style="font-size:0.85rem;font-weight:700;">{tier} Card</div>'
+            f'<div style="font-size:0.85rem;">Rating {c["rating"]:.0f}  |  Rank {c["rank"]}</div></div></div>'
+            '<div style="border-top:1px solid rgba(0,0,0,0.25);margin:12px 0;"></div>'
+            f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;font-size:1.05rem;">{cells}</div>'
+            '<div style="border-top:1px solid rgba(0,0,0,0.25);margin:12px 0;"></div>'
+            '<div style="display:flex;justify-content:space-between;font-weight:600;">'
+            f'<span>Record {c["wins"]}-{c["games"] - c["wins"]}</span><span>Games {c["games"]}</span></div></div>')
+
+
+def radar_svg(stats, colour):
+    """The same six stats as a radar chart (hexagon): the further out a corner, the higher the stat."""
+    import math
+    n, cx, cy, R = len(stats), 160, 140, 88
+
+    def pt(i, v):
+        ang = -math.pi / 2 + i * 2 * math.pi / n
+        return cx + R * v / 99 * math.cos(ang), cy + R * v / 99 * math.sin(ang)
+    ring = lambda lvl: " ".join("%.1f,%.1f" % pt(i, lvl) for i in range(n))
+    out = ['<svg viewBox="-30 0 380 290" style="width:100%;max-width:360px;display:block;margin:6px auto;" '
+           'xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="13">']
+    out += [f'<polygon points="{ring(l)}" fill="none" stroke="currentColor" stroke-opacity="0.25"/>' for l in (25, 50, 75, 99)]
+    out += ['<line x1="%d" y1="%d" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-opacity="0.25"/>' % ((cx, cy) + pt(i, 99))
+            for i in range(n)]
+    out.append(f'<polygon points="{" ".join("%.1f,%.1f" % pt(i, v) for i, v in enumerate(stats.values()))}" '
+               f'fill="{colour}" fill-opacity="0.35" stroke="{colour}" stroke-width="2.5" stroke-linejoin="round"/>')
+    for i, (k, v) in enumerate(stats.items()):
+        x, y = pt(i, v)
+        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{colour}"/>')
+        lx, ly = pt(i, 99 * 1.27)
+        anchor = "start" if lx > cx + 8 else "end" if lx < cx - 8 else "middle"
+        out.append(f'<text x="{lx:.1f}" y="{ly + 4:.1f}" text-anchor="{anchor}" fill="currentColor">{k} <tspan font-weight="700">{v}</tspan></text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
 def pick(container, label, options, **kw):
     """A dropdown you can only tap, not type into, so no phone keyboard pops up."""
     try:
@@ -400,13 +666,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (["Awards"] if authed else [])
+pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (["Awards", "Fun"] if authed else [])
 if st.session_state.get("page") not in pages:
     st.session_state.page = "Leaderboard"
 page = st.radio("Page", pages, horizontal=True, key="page", label_visibility="collapsed")
 
 # ----- leaderboard -----
 if page == "Leaderboard":
+    if matches:
+        bounty_banner()
     stats = {p: [0, 0] for p in players}
     for m in matches:
         loser = m["p2"] if m["winner"] == m["p1"] else m["p1"]
@@ -512,6 +780,7 @@ elif page == "Enter Match":
             st.session_state.m_players = sel
             st.caption("Games go to 11, win by 2. At 14-14 the next point wins (15-14). "
                        f"Winning 11-0 earns a +{SHUTOUT_BONUS} rating bonus.")
+            bounty_banner()
             st.markdown("**Tap Two Players**")
             button_grid("grid_players", [(n, f"pick_{n}", n in sel, toggle_player, (n,)) for n in sorted(players)])
             st.caption(f"Player 1: {sel[0] if sel else '-'}   |   Player 2: {sel[1] if len(sel) > 1 else '-'}")
@@ -535,16 +804,21 @@ elif page == "Enter Match":
                     else:
                         r1, r2 = players[p1], players[p2]
                         bonus = shutout_bonus(s1, s2)
-                        n1, n2 = play(r1, r2, s1, s2, bonus)
+                        winner = p1 if s1 > s2 else p2
+                        latest, defences = league_state(matches)
+                        bounty = bounty_claim(champion_of({**latest, p1: r1, p2: r2}), p1, p2, winner, defences)
+                        n1, n2 = play(r1, r2, s1, s2, bonus + bounty)
                         players[p1], players[p2] = n1, n2
                         matches.append({
                             "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "p1": p1, "p2": p2,
-                            "score": [s1, s2], "winner": p1 if s1 > s2 else p2, "bonus": bonus,
+                            "score": [s1, s2], "winner": winner, "bonus": bonus, "bounty": bounty,
                             "p1_before": r1, "p1_after": n1, "p2_before": r2, "p2_after": n2})
                         save(data, sha, f"{p1} {s1}-{s2} {p2}")
                         msg = f"{p1}: {r1:.0f} → {n1:.0f}  |  {p2}: {r2:.0f} → {n2:.0f}"
                         if bonus:
-                            msg += f"  |  11-0 bonus: +{bonus} to {p1 if s1 > s2 else p2}"
+                            msg += f"  |  11-0 bonus: +{bonus} to {winner}"
+                        if bounty:
+                            msg += f"  |  Bounty claimed: +{bounty} to {winner}"
                         clear_entry()
                         st.session_state.flash = msg
                         st.rerun()
@@ -675,8 +949,33 @@ elif page == "Player History":
     player_history()
 
 # ----- awards -----
-else:
+elif page == "Awards":
     if not matches:
         st.info("No matches yet.")
     else:
         awards_html(build_awards(matches))
+
+# ----- fun (logged in only) -----
+else:
+    st.subheader("Leaderboard Race")
+    if not matches:
+        st.info("No matches yet.")
+    else:
+        doc, height = race_html(matches)
+        st.iframe(doc, height=height)
+
+    st.subheader("Player Trading Cards")
+
+    @st.fragment
+    def trading_cards():
+        if not players:
+            st.info("No players yet.")
+            return
+        who = pick(st, "Player", sorted(players, key=lambda x: -players[x]), key="card_player")
+        c = card_stats(who)
+        if c is None:
+            st.info(f"{who} hasn't played yet, so there's no card to show.")
+            return
+        st.html(card_html(who, c))
+        st.html(radar_svg(c["stats"], player_color(who)))
+    trading_cards()
