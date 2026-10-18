@@ -414,7 +414,7 @@ def race_html(matches):
     return doc, top_n * RACE_ROW_H + 105
 
 
-CARD_LABELS = ("Attack", "Defence", "Winning", "Form")
+CARD_LABELS = ("Attack", "Defence", "Winning", "Form", "Toughness")
 
 
 def recent_swing(name):
@@ -423,12 +423,40 @@ def recent_swing(name):
     return sum(m[me + "_after"] - m[me + "_before"] for m, me in games) / len(games) if games else None
 
 
+def match_edge(field, opp):
+    """How tough one opponent was, from -1 (the softest opponent you could have picked) through 0 (an average
+    opponent) to +1 (the toughest). `field` holds the ratings of everyone you could have played at the time."""
+    vals = list(field.values())
+    lo, hi, mid = min(vals), max(vals), sum(vals) / len(vals)
+    if opp >= mid:
+        return (opp - mid) / (hi - mid) if hi > mid else 0.0
+    return (opp - mid) / (mid - lo) if mid > lo else 0.0
+
+
+def toughness_edges(matches):
+    """READ-ONLY: each player's average edge, match by match. Every opponent is judged against the other players
+    who could have been picked at that moment, so the top player isn't marked down for having nobody above him."""
+    latest, total, count = {}, {}, {}
+    for m in matches:
+        for me, other in (("p1", "p2"), ("p2", "p1")):
+            who, opp = m[me], m[other]
+            field = {q: r for q, r in latest.items() if q not in (who, opp)}
+            field[opp] = m[other + "_before"]
+            if len(field) >= 2:  # need at least two possible opponents for the comparison to mean anything
+                total[who] = total.get(who, 0.0) + match_edge(field, m[other + "_before"])
+                count[who] = count.get(who, 0) + 1
+        latest[m["p1"]], latest[m["p2"]] = m["p1_after"], m["p2_after"]
+    return {p: total[p] / count[p] for p in count}
+
+
 def card_stats(name):
     """READ-ONLY: a FIFA-style card for one player. Four stats from 0 to 99, and the overall (OVR) is their average.
     Attack  = points scored per game, out of 11 (0 points is 0, 11 or more is 99).
     Defence = points conceded per game: 11 or more is 50, 5 or fewer is 99, in a straight line between.
     Winning = win rate, lifted so 0% is 50 and 100% is 99.
-    Form    = recent rating change compared with everyone else: the hottest player gets 99, the coldest 50."""
+    Form    = recent rating change compared with everyone else: the hottest player gets 99, the coldest 50.
+    Toughness = how strong your opponents were compared with who you could have picked (50 = always the softest
+                option, about 75 = an average mix, 99 = always the toughest)."""
     games = [(m, "p1" if m["p1"] == name else "p2") for m in matches if name in (m["p1"], m["p2"])]
     if not games:
         return None
@@ -441,12 +469,15 @@ def card_stats(name):
     swings = [v for v in swings.values() if v is not None]
     lo, hi = min(swings), max(swings)
     form = 75 if hi - lo < 1e-9 else 50 + 49 * (recent_swing(name) - lo) / (hi - lo)  # nobody to compare with: 75
+    edge = toughness_edges(matches).get(name)
+    tough = 74.5 if edge is None else 50 + 49 * (edge + 1) / 2
     cl = lambda x: max(0, min(99, int(x + 0.5)))  # halves round up
     stats = dict(zip(CARD_LABELS, (
         cl(f / g / 11 * 99),
         cl(50 + 49 * max(0, min(1, (11 - a / g) / 6))),
         cl(50 + 49 * w / g),
-        cl(form))))
+        cl(form),
+        cl(tough))))
     ranking = sorted(players, key=lambda x: -players[x])
     return {"stats": stats, "ovr": int(sum(stats.values()) / len(stats) + 0.5), "games": g, "wins": w,
             "rating": players[name], "rank": ranking.index(name) + 1}
@@ -459,8 +490,10 @@ def card_tier(ovr):
 
 def card_html(name, c):
     tier, colour = card_tier(c["ovr"])
-    cells = "".join(f'<div style="display:flex;justify-content:space-between;"><span>{k}</span><b>{v}</b></div>'
-                    for k, v in c["stats"].items())
+    n = len(c["stats"])
+    cells = "".join(
+        f'<div style="display:flex;justify-content:space-between;{"grid-column:span 2;" if n % 2 and i == n - 1 else ""}">'
+        f'<span>{k}</span><b>{v}</b></div>' for i, (k, v) in enumerate(c["stats"].items()))
     return (f'<div style="max-width:340px;margin:0 auto;border-radius:18px;padding:18px 20px;background:{colour};'
             'color:#1b1b1b;">'
             '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
