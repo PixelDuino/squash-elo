@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-MODE = 1  # Extra tabs when logged in:  0 = none (no Awards or Fun)  |  1 = Awards + Fun  |  2 = "Stats" tab (everyone's numbers), no Fun
+MODE = 3  # Extra tabs when logged in:  0 = none (no Awards or Fun)  |  1 = Awards + Fun  |  2 = "Stats" tab (everyone's numbers), no Fun
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
