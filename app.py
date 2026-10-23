@@ -12,6 +12,8 @@ import pandas as pd
 import requests
 import streamlit as st
 
+MODE = 1  # Extra tabs when logged in:  0 = none (no Awards or Fun)  |  1 = Awards + Fun  |  2 = "Stats" tab (everyone's numbers), no Fun
+
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
 # Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
@@ -129,7 +131,9 @@ def rename_player(players, matches, old, new):
 
 def forget_names():
     """Clear remembered dropdown choices that may still point at an old or removed name."""
-    for k in ("chart_sel", "hist_player", "hist_opp", "manage_who", "card_player"):
+    for k in ("chart_sel", "hist_player", "manage_who", "card_player"):
+        st.session_state.pop(k, None)
+    for k in [k for k in st.session_state if str(k).startswith("hist_opp_")]:
         st.session_state.pop(k, None)
 
 
@@ -147,7 +151,7 @@ def player_stats(matches):
     return out
 
 
-def build_awards(matches):
+def build_awards(matches, everyone=False):
     """READ-ONLY: returns [(award name, ranked rows, text if nobody qualifies), ...].
     Each ranked row is (player, stat text, place). Tied players share a place."""
     ps = player_stats(matches)
@@ -225,7 +229,7 @@ def build_awards(matches):
         per = {p: 15 + 5 * z for p, z in blend.items()}
 
     needs = f"Needs {MIN_GAMES}+ Games"
-    return [
+    cards = [
         ("Player Efficiency Rating", ranked(per, lambda v: f"{v:.1f} PER"), f"Needs 2+ Players With {MIN_GAMES}+ Games"),
         ("Most Dominant", ranked({p: (d["f"] - d["a"]) / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
                                  lambda v: f"{v:+.1f} Pts Per Game"), needs),
@@ -244,9 +248,13 @@ def build_awards(matches):
         ("Conqueror", ranked({p: len(v) for p, v in beaten.items()},
                              lambda v: plural(v, "Opponent") + " Beaten"), "No Wins Yet"),
     ]
+    if everyone:  # Stats view: also list players who don't qualify for a stat yet, at the bottom
+        cards = [(t, rows + [(p, empty if empty.startswith("Needs") else "None", None)
+                             for p in sorted(ps) if p not in {r[0] for r in rows}], empty) for t, rows, empty in cards]
+    return cards
 
 
-def awards_html(cards):
+def awards_html(cards, everyone=False):
     """Award name on top, winner on the left with the stat on the same line to the right.
     Tap an award to expand it and see the next two players underneath."""
     ordinal = lambda n: {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
@@ -257,7 +265,7 @@ def awards_html(cards):
            ".aw[open] .arrow{transform:rotate(-135deg);margin-bottom:-2px;}</style>"]
     for title, rows, empty in cards:
         winners = [r for r in rows if r[2] == 1]
-        extra = rows[len(winners):len(winners) + 2]
+        extra = rows[len(winners):] if everyone else rows[len(winners):len(winners) + 2]
         who = " &amp; ".join(html.escape(r[0]) for r in winners) if winners else "No Winner Yet"
         stat = winners[0][1] if winners else empty
         arrow = '<span class="arrow"></span>' if extra else ""
@@ -271,8 +279,10 @@ def awards_html(cards):
             out.append(f'<div style="{box}">{head}</div>')
             continue
         more = "".join(
-            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:8px 0 0 12px;">'
-            f'<div style="font-size:1.05rem;"><span style="opacity:0.6;margin-right:10px;">{ordinal(r[2])}</span>{html.escape(r[0])}</div>'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:8px 0 0 12px;'
+            f'{"opacity:0.55;" if r[2] is None else ""}">'
+            f'<div style="font-size:1.05rem;"><span style="display:inline-block;min-width:2.8em;opacity:0.6;">'
+            f'{ordinal(r[2]) if r[2] else "-"}</span>{html.escape(r[0])}</div>'
             f'<div style="font-size:1rem;color:#2a9d8f;white-space:nowrap;">{html.escape(r[1])}</div></div>'
             for r in extra)
         out.append(f'<details class="aw" style="{box}"><summary>{head}</summary>{more}</details>')
@@ -651,7 +661,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (["Awards", "Fun"] if authed else [])
+extra_tabs = {0: [], 1: ["Awards", "Fun"], 2: ["Stats"]}.get(MODE, [])
+pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (extra_tabs if authed else [])
 if st.session_state.get("page") not in pages:
     st.session_state.page = "Leaderboard"
 page = st.radio("Page", pages, horizontal=True, key="page", label_visibility="collapsed")
@@ -896,7 +907,13 @@ elif page == "Player History":
             if not others:
                 st.info("Add another player to see head to head stats.")
             else:
-                opp = pick(st, "Versus", others, key="hist_opp")
+                played = {}  # opponent -> (games against them, index of the latest one)
+                for k, m in enumerate(matches):
+                    if name in (m["p1"], m["p2"]):
+                        o = m["p2"] if m["p1"] == name else m["p1"]
+                        played[o] = (played.get(o, (0, 0))[0] + 1, k)
+                fav = max((o for o in played if o in others), key=lambda o: played[o], default=others[0])  # tie: the latest
+                opp = pick(st, "Versus", others, index=others.index(fav), key=f"hist_opp_{name}")
                 h2h = [m for m in matches if {m["p1"], m["p2"]} == {name, opp}]
                 if not h2h:
                     st.info(f"{name} and {opp} haven't played each other yet.")
@@ -926,11 +943,11 @@ elif page == "Player History":
     player_history()
 
 # ----- awards -----
-elif page == "Awards":
+elif page in ("Awards", "Stats"):
     if not matches:
         st.info("No matches yet.")
     else:
-        awards_html(build_awards(matches))
+        awards_html(build_awards(matches, everyone=MODE == 2), everyone=MODE == 2)
 
 # ----- fun (logged in only) -----
 else:
