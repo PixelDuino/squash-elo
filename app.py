@@ -5,6 +5,7 @@ Data lives in squash_data.json inside a separate private GitHub repo, so it surv
 import base64
 import html
 import json
+import uuid
 from datetime import datetime
 
 import altair as alt
@@ -12,7 +13,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-MODE = 2 # Extra tabs when logged in:  0 = none (no Awards or Fun)  |  1 = Awards + Fun  |  2 = "Stats" tab (everyone's numbers), no Fun
+MODE = 1  # Extra tabs when logged in:  0 = none (no Awards or Fun)  |  1 = Awards + Fun  |  2 = "Stats" tab (everyone's numbers), no Fun
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
@@ -26,6 +27,7 @@ PER_WEIGHTS = {"win": 0.30,   # win percentage
                "off": 0.15,   # average points won per game
                "dfn": 0.15,   # average points lost per game (fewer is better)
                "sos": 0.15}   # strength of schedule: average rating of opponents played
+MAX_PENDING = 30  # most results that can be waiting for approval at once
 SHUTOUT_BONUS = 5  # extra rating points for winning 11-0 (the loser only gets the normal drop)
 CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
 URL = f"https://api.github.com/repos/{st.secrets['DATA_REPO']}/contents/squash_data.json"
@@ -125,7 +127,7 @@ def rename_player(players, matches, old, new):
         players[new if k == old else k] = v
     for m in matches:
         for k in ("p1", "p2", "winner"):
-            if m[k] == old:
+            if m.get(k) == old:
                 m[k] = new
 
 
@@ -559,6 +561,14 @@ def toggle_chart(name):
     st.session_state.chart_sel = [p for p in sel if p != name] if name in sel else sel + [name]
 
 
+def wide_button(container, label, **kw):
+    """A button that fills its column (works across Streamlit versions)."""
+    try:
+        return container.button(label, width="stretch", **kw)
+    except TypeError:
+        return container.button(label, use_container_width=True, **kw)
+
+
 def form_btn(container, label):
     """A submit button that fills its column (works across Streamlit versions)."""
     try:
@@ -615,6 +625,7 @@ st.set_page_config(page_title="Squash Elo")
 st.title("Squash Elo")
 data, sha = load()
 players, matches = data["players"], data["matches"]
+pending = data.setdefault("pending", [])  # results waiting for approval: they change nothing until approved
 authed = st.session_state.get("auth", False)
 
 with st.expander("Logged In" if authed else "Login (Needed To Edit)"):
@@ -636,6 +647,11 @@ if "flash_err" in st.session_state:
     st.error(st.session_state.pop("flash_err"))
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
+if authed and pending:
+    st.markdown('<div style="border-left:4px solid #d6a300;background:rgba(214,163,0,0.12);border-radius:4px;'
+                f'padding:8px 12px;margin:4px 0 10px 0;"><b>{len(pending)} result{"" if len(pending) == 1 else "s"} '
+                f'waiting for approval.</b> Review {"it" if len(pending) == 1 else "them"} in Match History.</div>',
+                unsafe_allow_html=True)
 
 # Streamlit's built-in st.tabs jump back to the first tab on reruns, so these tabs are a keyed radio
 # (which remembers the selection) styled with CSS to look like normal tabs.
@@ -745,15 +761,15 @@ if page == "Leaderboard":
                     elif new.lower() in [p.lower() for p in players if p != who]:
                         st.error("Another player already has that name.")
                     else:
-                        rename_player(players, matches, who, new)
+                        rename_player(players, matches + pending, who, new)
                         save(data, sha, f"Rename {who} to {new}")
                         forget_names()
                         st.session_state.flash = f"Renamed {who} to {new}. All their matches were updated."
                         st.rerun()
-            played = sum(who in (m["p1"], m["p2"]) for m in matches)
+            played = sum(who in (m["p1"], m["p2"]) for m in matches + pending)
             if played:
-                st.caption(f"{who} has played {played} match{'' if played == 1 else 'es'}, so they can't be removed. "
-                           "Delete those matches first in Match History if you really want to remove them.")
+                st.caption(f"{who} is in {played} match{'' if played == 1 else 'es'} (counting any waiting for approval), "
+                           "so they can't be removed. Delete or cancel those in Match History first if you really want to remove them.")
             elif st.checkbox(f"I Want To Remove {who}", key=f"rm_ok_{who}") and st.button("Remove Player"):
                 del players[who]
                 save(data, sha, f"Remove player {who}")
@@ -763,10 +779,8 @@ if page == "Leaderboard":
 
 # ----- enter match -----
 elif page == "Enter Match":
-    if not authed:
-        st.info("Log in (top of page) to enter results.")
-    elif len(players) < 2:
-        st.info("Add at least two players first.")
+    if len(players) < 2:
+        st.info("Add at least two players first." if authed else "There aren't enough players yet. Ask someone who is logged in to add them.")
     else:
         @st.fragment
         def enter_match():
@@ -774,6 +788,10 @@ elif page == "Enter Match":
             st.session_state.m_players = sel
             st.caption("Games go to 11, win by 2. At 14-14 the next point wins (15-14). "
                        f"Winning 11-0 earns a +{SHUTOUT_BONUS} rating bonus.")
+            if not authed:
+                st.caption("Results entered here are sent for approval. They count once someone who is logged in approves them.")
+            if pending:
+                st.caption(f"{len(pending)} result{' is' if len(pending) == 1 else 's are'} already waiting for approval (see Match History).")
             st.markdown("**Tap Two Players**")
             button_grid("grid_players", [(n, f"pick_{n}", n in sel, toggle_player, (n,)) for n in sorted(players)])
             st.caption(f"Player 1: {sel[0] if sel else '-'}   |   Player 2: {sel[1] if len(sel) > 1 else '-'}")
@@ -787,13 +805,22 @@ elif page == "Enter Match":
                 button_grid("grid_s2", [(str(n), f"sc2_{n}", s2 == n, set_score, ("m_s2", n)) for n in range(16)])
                 st.markdown(f"### {p1} {'-' if s1 is None else s1}  :  {'-' if s2 is None else s2} {p2}")
 
-                go = st.button("Submit Match", type="primary", key="submit_match")
+                go = st.button("Submit Match" if authed else "Submit For Approval", type="primary", key="submit_match")
                 st.button("Clear", key="clear_entry", on_click=clear_entry)
                 if go:
                     if s1 is None or s2 is None:
                         st.error("Tap a score for both players.")
                     elif not valid_game(s1, s2):
                         st.error(f"{s1}-{s2} isn't valid. {SCORE_RULES}")
+                    elif not authed and len(pending) >= MAX_PENDING:
+                        st.error("Too many results are waiting for approval right now. Please try again once some have been approved or cancelled.")
+                    elif not authed:
+                        pending.append({"id": uuid.uuid4().hex[:8], "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        "p1": p1, "p2": p2, "score": [s1, s2]})
+                        save(data, sha, f"Waiting for approval: {p1} {s1}-{s2} {p2}")
+                        clear_entry()
+                        st.session_state.flash = f"Sent for approval: {p1} {s1}-{s2} {p2}. It counts once someone approves it."
+                        st.rerun()
                     else:
                         r1, r2 = players[p1], players[p2]
                         bonus = shutout_bonus(s1, s2)
@@ -814,6 +841,46 @@ elif page == "Enter Match":
 
 # ----- match history -----
 elif page == "Match History":
+    if pending:
+        st.subheader(f"Waiting For Approval ({len(pending)})")
+        if not authed:
+            st.caption("These results count once someone who is logged in approves them.")
+            st.dataframe(pd.DataFrame([{"Result": f'{m["p1"]} {m["score"][0]}-{m["score"][1]} {m["p2"]}',
+                                        "Submitted": m["date"][5:]} for m in pending]),
+                         hide_index=True, height=35 * (len(pending) + 1) + 3)
+        else:
+            for m in list(pending):
+                a, b = m["score"]
+                st.markdown(f'<div style="margin-top:6px;"><b>{html.escape(m["p1"])} {a} - {b} {html.escape(m["p2"])}</b><br>'
+                            f'<span style="opacity:0.65;font-size:0.85rem;">Submitted {m["date"]}</span></div>',
+                            unsafe_allow_html=True)
+                with st.container(key=f"grid_pend_{m['id']}"):
+                    c1, c2 = st.columns(2)
+                    approve = wide_button(c1, "Approve", key=f"approve_{m['id']}", type="primary")
+                    cancel = wide_button(c2, "Cancel", key=f"cancel_{m['id']}")
+                if approve:
+                    p1, p2 = m["p1"], m["p2"]
+                    if p1 not in players or p2 not in players or not valid_game(a, b):
+                        st.error("This result can't be approved (a player no longer exists, or the score isn't valid). Cancel it instead.")
+                    else:
+                        r1, r2 = players[p1], players[p2]
+                        bonus = shutout_bonus(a, b)
+                        n1, n2 = play(r1, r2, a, b, bonus)
+                        players[p1], players[p2] = n1, n2
+                        matches.append({"date": m["date"], "p1": p1, "p2": p2, "score": [a, b],
+                                        "winner": p1 if a > b else p2, "bonus": bonus,
+                                        "p1_before": r1, "p1_after": n1, "p2_before": r2, "p2_after": n2})
+                        pending.remove(m)
+                        save(data, sha, f"Approve {p1} {a}-{b} {p2}")
+                        st.session_state.flash = (f"Approved {p1} {a}-{b} {p2}.  {p1}: {r1:.0f} → {n1:.0f}  |  {p2}: {r2:.0f} → {n2:.0f}"
+                                                  + (f"  |  11-0 bonus: +{bonus}" if bonus else ""))
+                        st.rerun()
+                elif cancel:
+                    pending.remove(m)
+                    save(data, sha, f"Cancel {m['p1']} {a}-{b} {m['p2']}")
+                    st.session_state.flash = f"Cancelled {m['p1']} {a}-{b} {m['p2']}."
+                    st.rerun()
+        st.divider()
     if matches:
         st.dataframe(pd.DataFrame([
             {"#": k, "Date": m["date"], "Player 1": m["p1"], "Player 2": m["p2"],
