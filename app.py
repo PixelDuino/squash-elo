@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-MODE = 2  # Extra tabs when logged in:  0 = none (no Awards or Fun)  |  1 = Awards + Fun  |  2 = "Stats" tab (everyone's numbers), no Fun
+MODE = 1  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
@@ -161,7 +161,7 @@ def build_awards(matches, everyone=False):
 
     def ranked(scores, fmt):  # scores: player -> number, higher is better
         items = sorted(scores.items(), key=lambda kv: -kv[1])
-        return [(p, fmt(v), 1 + sum(1 for _, o in items if o > v + 1e-9)) for p, v in items]
+        return [(p, fmt(v), 1 + sum(1 for _, o in items if o > v + 1e-9), v) for p, v in items]
 
     # Giant Killer: biggest rating gap overcome in a win (rating before the match)
     upset = {}
@@ -251,7 +251,7 @@ def build_awards(matches, everyone=False):
                              lambda v: plural(v, "Opponent") + " Beaten"), "No Wins Yet"),
     ]
     if everyone:  # Stats view: also list players who don't qualify for a stat yet, at the bottom
-        cards = [(t, rows + [(p, empty if empty.startswith("Needs") else "None", None)
+        cards = [(t, rows + [(p, empty if empty.startswith("Needs") else "None", None, None)
                              for p in sorted(ps) if p not in {r[0] for r in rows}], empty) for t, rows, empty in cards]
     return cards
 
@@ -547,6 +547,242 @@ def radar_svg(stats, colour):
     return "".join(out)
 
 
+STAT_META = {  # tile = button label, short = table heading, fmt = number format, disp = shown value from the internal one
+    "Player Efficiency Rating": dict(tile="Efficiency (PER)", short="PER", fmt="%.1f", disp=None,
+                                     desc="One number blending win rate, points won and lost, point difference and schedule. 15 is average."),
+    "Most Dominant": dict(tile="Most Dominant", short="Dom", fmt="%+.1f", disp=None, desc="Average points won minus average points lost, per game."),
+    "Win Machine": dict(tile="Win Machine", short="Wins", fmt="%d", disp=None, desc="Total wins."),
+    "Iron Legs": dict(tile="Iron Legs", short="Games", fmt="%d", disp=None, desc="Total games played."),
+    "Giant Killer": dict(tile="Giant Killer", short="Giant", fmt="%+.0f", disp=None, desc="Biggest rating gap overcome in a win."),
+    "Hot Streak": dict(tile="Hot Streak", short="Streak", fmt="%d", disp=None, desc="Longest run of wins in a row."),
+    "Brick Wall": dict(tile="Brick Wall", short="Wall", fmt="%.1f", disp=lambda v: -v, desc="Average points conceded per game. Fewer is better."),
+    "Nail Biter": dict(tile="Nail Biter", short="Nail", fmt="%d", disp=None, desc="Games decided by 3 points or fewer, won or lost."),
+    "Peak Performer": dict(tile="Peak Performer", short="Peak", fmt="%.0f", disp=None, desc="Highest rating ever reached."),
+    "Longest Reign": dict(tile="Longest Reign", short="Reign", fmt="%d", disp=None, desc="Matches played while sitting at number 1."),
+    "Toughest Schedule": dict(tile="Tough Schedule", short="Sched", fmt="%.0f", disp=None, desc="Average rating of the opponents faced."),
+    "Conqueror": dict(tile="Conqueror", short="Conq", fmt="%d", disp=None, desc="Different opponents beaten."),
+}
+STAT_VIEWS = ["Cards", "Bars", "Dots", "Heatmap", "Medals", "Radar"]
+
+
+def stat_meta(title):
+    return STAT_META.get(title, dict(tile=title, short=title[:5], fmt="%.1f", disp=None, desc=""))
+
+
+def goodness(rows):
+    """0 (worst) to 1 (best) for every player who has a value for this stat."""
+    vals = {r[0]: r[3] for r in rows if r[3] is not None}
+    if not vals:
+        return {}
+    lo, hi = min(vals.values()), max(vals.values())
+    return {p: (0.5 if hi - lo < 1e-9 else (v - lo) / (hi - lo)) for p, v in vals.items()}
+
+
+def set_stat_pick(title):
+    st.session_state.stats_pick = title
+
+
+def toggle_radar(name):
+    """Tap to add or remove a player from the radar overlay. At most 3: a fourth tap drops the earliest."""
+    sel = st.session_state.get("radar_sel", [])
+    st.session_state.radar_sel = [p for p in sel if p != name] if name in sel else (sel + [name])[-3:]
+
+
+def view_bars(cards):
+    """Pick a stat with the tiles, see everyone as a ranked bar chart (the longest bar is always the best)."""
+    titles = [t for t, _, _ in cards]
+    pick_ = st.session_state.get("stats_pick")
+    pick_ = pick_ if pick_ in titles else titles[0]
+    button_grid("grid_statpick", [(stat_meta(t)["tile"], f"sp_{i}", t == pick_, set_stat_pick, (t,)) for i, t in enumerate(titles)], cols=3)
+    title, rows, empty = next(c for c in cards if c[0] == pick_)
+    g = goodness(rows)
+    out = [f'<div style="margin:14px 0 4px;font-weight:700;font-size:1.15rem;">{html.escape(title)}</div>',
+           f'<div style="opacity:0.7;font-size:0.9rem;margin-bottom:6px;">{html.escape(stat_meta(title)["desc"])}</div>']
+    place = 0
+    for p, text, pl, v in rows:
+        dim = "opacity:0.5;" if v is None else ""
+        bar = ""
+        if v is not None:
+            bar = (f'<div style="height:10px;margin:5px 0 0 30px;border-radius:5px;background:rgba(128,128,128,0.16);">'
+                   f'<div style="height:100%;width:{6 + 94 * g[p]:.1f}%;border-radius:5px;background:{player_color(p)};"></div></div>')
+        out.append(f'<div style="margin-top:12px;{dim}"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">'
+                   f'<div style="display:flex;align-items:baseline;min-width:0;"><span style="width:22px;text-align:right;margin-right:8px;'
+                   f'font-weight:700;opacity:0.65;flex:none;">{pl if pl else "-"}</span>'
+                   f'<span style="font-weight:600;">{html.escape(p)}</span></div>'
+                   f'<div style="font-weight:700;color:#2a9d8f;flex:none;">{html.escape(text)}</div></div>{bar}</div>')
+    st.markdown("".join(out), unsafe_allow_html=True)
+
+
+def short_codes(names):
+    codes = {}
+    for n in names:
+        w = n.split()
+        codes[n] = (w[0][0] + (w[1][0] if len(w) > 1 else w[0][1:2])).upper()
+    for c in {c for c in codes.values() if list(codes.values()).count(c) > 1}:
+        for n in [n for n in codes if codes[n] == c]:
+            codes[n] = n.replace(" ", "")[:3].upper()
+    return codes
+
+
+def view_dots(cards):
+    """One line per stat with a dot for every player: dots bunch up where players are close, spread out where they differ."""
+    names = sorted({r[0] for _, rows, _ in cards for r in rows})
+    codes = short_codes(names)
+    out = ['<div style="display:flex;flex-wrap:wrap;gap:4px 14px;margin-bottom:6px;font-size:0.9rem;">' + "".join(
+        f'<span style="display:inline-flex;align-items:center;"><span style="width:20px;height:20px;border-radius:50%;background:{player_color(n)};'
+        f'color:#fff;font-size:8px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;margin-right:5px;">{codes[n]}</span>'
+        f'{html.escape(n)}</span>' for n in names) + '</div>',
+        '<div style="opacity:0.65;font-size:0.85rem;margin-bottom:4px;">Further right is better in every stat.</div>']
+    for title, rows, empty in cards:
+        g = goodness(rows)
+        if not g:
+            continue
+        placed, lane_x, lane_of = [], [], {}
+        for p in sorted(g, key=lambda q: g[q]):
+            x = 4 + 92 * g[p]
+            r = 0
+            while r < len(lane_x) and any(abs(x - px) < 8.5 for px in lane_x[r]):
+                r += 1
+            if r == len(lane_x):
+                lane_x.append([])
+            lane_x[r].append(x)
+            lane_of[p] = (x, r)
+        dots = "".join(
+            f'<div title="{html.escape(p)}" style="position:absolute;left:calc({x:.1f}% - 11px);bottom:{r * 24 + 6}px;width:22px;height:22px;'
+            f'border-radius:50%;background:{player_color(p)};color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;'
+            f'justify-content:center;">{codes[p]}</div>' for p, (x, r) in lane_of.items())
+        worst = min((r for r in rows if r[3] is not None), key=lambda r: r[3])
+        best = [r for r in rows if r[2] == 1]
+        out.append('<div style="border-top:1px solid rgba(128,128,128,0.25);padding:12px 4px 8px;">'
+                   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">'
+                   f'<div style="font-weight:700;">{html.escape(title)}</div>'
+                   f'<div style="color:#2a9d8f;font-weight:700;font-size:0.9rem;text-align:right;">{html.escape(" & ".join(r[0] for r in best))}</div></div>'
+                   f'<div style="position:relative;height:{len(lane_x) * 24 + 10}px;margin-top:4px;">'
+                   '<div style="position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(128,128,128,0.35);"></div>' + dots + '</div>'
+                   '<div style="display:flex;justify-content:space-between;font-size:0.8rem;opacity:0.7;margin-top:3px;">'
+                   f'<span>{html.escape(worst[1])}</span><span>{html.escape(best[0][1] if best else "")}</span></div></div>')
+    st.markdown("".join(out), unsafe_allow_html=True)
+
+
+def view_heatmap(cards):
+    """Players down the side, stats across the top. The darker the cell, the better that player is at that stat."""
+    names = sorted({r[0] for _, rows, _ in cards for r in rows})
+    data, good = {}, {}
+    for title, rows, _ in cards:
+        m = stat_meta(title)
+        conv = m["disp"] or (lambda v: v)
+        data[m["short"]] = pd.Series({r[0]: conv(r[3]) for r in rows if r[3] is not None}, dtype=float)
+        good[m["short"]] = goodness(rows)
+    df = pd.DataFrame({k: v.reindex(names) for k, v in data.items()})
+    avg = {p: sum(g.get(p, 0) for g in good.values()) / len(good) for p in names}
+    df = df.loc[sorted(names, key=lambda p: -avg[p])]
+    df.index.name = "Player"
+
+    def paint(frame):
+        css = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        for k in frame.columns:
+            for p in frame.index:
+                g = good.get(k, {}).get(p)
+                if g is not None:
+                    css.loc[p, k] = f"background-color: rgba(42,157,143,{0.10 + 0.75 * g:.2f});" + ("color: #ffffff;" if g > 0.6 else "")
+        return css
+    cfg = {stat_meta(t)["short"]: st.column_config.NumberColumn(stat_meta(t)["short"], help=t, format=stat_meta(t)["fmt"])
+           for t, _, _ in cards}
+    st.dataframe(df.style.apply(paint, axis=None), height=35 * (len(df) + 1) + 14, column_config=cfg)
+    st.caption("Darker means better in that column. Best all-rounders are at the top. Swipe sideways for more stats. "
+               + "  |  ".join(f"{stat_meta(t)['short']} = {t}" for t, _, _ in cards))
+
+
+def view_medals(cards):
+    """Olympic-style table: how many stats each player leads (gold), is 2nd in (silver) and 3rd in (bronze)."""
+    names = sorted({r[0] for _, rows, _ in cards for r in rows})
+    tally = {p: [0, 0, 0] for p in names}
+    for _, rows, _ in cards:
+        for r in rows:
+            if r[2] in (1, 2, 3):
+                tally[r[0]][r[2] - 1] += 1
+    order = sorted(names, key=lambda p: (-(3 * tally[p][0] + 2 * tally[p][1] + tally[p][2]), -tally[p][0], -tally[p][1], p))
+    df = pd.DataFrame([{"#": i + 1, "Player": p, "Gold": tally[p][0], "Silver": tally[p][1], "Bronze": tally[p][2],
+                        "Points": 3 * tally[p][0] + 2 * tally[p][1] + tally[p][2]} for i, p in enumerate(order)])
+
+    def tint(col, colour):
+        return [f"background-color: {colour}; color: #000000;" if v > 0 else "" for v in col]
+    styled = (df.style.apply(tint, colour="#FFD700", subset=["Gold"]).apply(tint, colour="#C0C0C0", subset=["Silver"])
+              .apply(tint, colour="#CD7F32", subset=["Bronze"]))
+    st.dataframe(styled, hide_index=True, height=35 * (len(df) + 1) + 3,
+                 column_config={"#": st.column_config.NumberColumn("#", width="small"), "Player": st.column_config.TextColumn("Player", width="medium")})
+    st.caption("Gold, silver and bronze count the stats a player is 1st, 2nd or 3rd in. Points: gold 3, silver 2, bronze 1. Ties share a medal.")
+
+
+def radar_overlay_svg(entries):
+    """Several players' card-stat radars drawn on top of each other. entries = [(name, stats, colour), ...]"""
+    import math
+    n, cx, cy, R = len(CARD_LABELS), 160, 140, 88
+
+    def pt(i, v):
+        ang = -math.pi / 2 + i * 2 * math.pi / n
+        return cx + R * v / 99 * math.cos(ang), cy + R * v / 99 * math.sin(ang)
+    out = ['<svg viewBox="-30 0 380 290" style="width:100%;max-width:380px;display:block;margin:6px auto;" '
+           'xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="13">']
+    out += [f'<polygon points="{" ".join("%.1f,%.1f" % pt(i, lvl) for i in range(n))}" fill="none" stroke="currentColor" stroke-opacity="0.25"/>'
+            for lvl in (25, 50, 75, 99)]
+    out += ['<line x1="%d" y1="%d" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-opacity="0.25"/>' % ((cx, cy) + pt(i, 99)) for i in range(n)]
+    for _, stats, colour in entries:
+        pts = " ".join("%.1f,%.1f" % pt(i, v) for i, v in enumerate(stats.values()))
+        out.append(f'<polygon points="{pts}" fill="{colour}" fill-opacity="0.16" stroke="{colour}" stroke-width="2.5" stroke-linejoin="round"/>')
+        out += [f'<circle cx="{pt(i, v)[0]:.1f}" cy="{pt(i, v)[1]:.1f}" r="3.2" fill="{colour}"/>' for i, v in enumerate(stats.values())]
+    for i, k in enumerate(CARD_LABELS):
+        lx, ly = pt(i, 99 * 1.27)
+        anchor = "start" if lx > cx + 8 else "end" if lx < cx - 8 else "middle"
+        out.append(f'<text x="{lx:.1f}" y="{ly + 4:.1f}" text-anchor="{anchor}" fill="currentColor">{k}</text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+def view_radar():
+    """Pick up to three players and compare their trading-card stats on one radar chart."""
+    cards = {p: card_stats(p) for p in players}
+    cards = {p: c for p, c in cards.items() if c}
+    if not cards:
+        st.info("No games played yet.")
+        return
+    ranked_ = sorted(cards, key=lambda p: -players[p])
+    if "radar_sel" not in st.session_state:
+        st.session_state.radar_sel = ranked_[:3]
+    sel = [p for p in st.session_state.radar_sel if p in cards]
+    st.caption("Tap up to three players to compare their card stats.")
+    button_grid("grid_radar", [(p, f"rd_{p}", p in sel, toggle_radar, (p,)) for p in ranked_])
+    if not sel:
+        st.info("Tap a player to draw their radar.")
+        return
+    st.markdown(radar_overlay_svg([(p, cards[p]["stats"], player_color(p)) for p in sel]), unsafe_allow_html=True)
+    st.markdown('<div style="display:flex;flex-wrap:wrap;gap:4px 18px;justify-content:center;margin-bottom:8px;">' + "".join(
+        f'<span style="display:inline-flex;align-items:center;"><span style="width:12px;height:12px;border-radius:50%;background:{player_color(p)};'
+        f'display:inline-block;margin-right:6px;"></span>{html.escape(p)} <span style="opacity:0.6;margin-left:6px;">OVR {cards[p]["ovr"]}</span></span>'
+        for p in sel) + "</div>", unsafe_allow_html=True)
+    table = pd.DataFrame({p: cards[p]["stats"] for p in sel})
+    st.dataframe(table, height=35 * (len(table) + 1) + 3)
+
+
+@st.fragment
+def stats_views():
+    """MODE 3: the Stats tab, with a row of tabs to switch between different ways of showing the same numbers."""
+    view = st.radio("View", STAT_VIEWS, horizontal=True, key="stats_view", label_visibility="collapsed")
+    cards = build_awards(matches, everyone=True)
+    if view == "Cards":
+        awards_html(cards, everyone=True)
+    elif view == "Bars":
+        view_bars(cards)
+    elif view == "Dots":
+        view_dots(cards)
+    elif view == "Heatmap":
+        view_heatmap(cards)
+    elif view == "Medals":
+        view_medals(cards)
+    else:
+        view_radar()
+
+
 def pick(container, label, options, **kw):
     """A dropdown you can only tap, not type into, so no phone keyboard pops up."""
     try:
@@ -657,11 +893,11 @@ if authed and pending:
 # (which remembers the selection) styled with CSS to look like normal tabs.
 st.markdown("""
 <style>
-.st-key-page div[role="radiogroup"] { gap: 0; flex-wrap: wrap; border-bottom: 1px solid rgba(128,128,128,0.35); }
-.st-key-page div[role="radiogroup"] label { padding: 8px 14px; margin: 0; cursor: pointer; border-bottom: 2px solid transparent; }
-.st-key-page div[role="radiogroup"] label > div:first-child { display: none; }
-.st-key-page div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #ff4b4b; }
-.st-key-page div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] { gap: 0; flex-wrap: wrap; border-bottom: 1px solid rgba(128,128,128,0.35); }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label { padding: 8px 14px; margin: 0; cursor: pointer; border-bottom: 2px solid transparent; }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label > div:first-child { display: none; }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #ff4b4b; }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
 /* hide the little hover toolbar (download CSV, fullscreen, search) on tables and graphs */
 [data-testid="stElementToolbar"], [data-testid="stDataFrameToolbar"], .vega-embed details, .vega-embed summary { display: none !important; }
 /* pull the title up closer to the top bar */
@@ -677,7 +913,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-extra_tabs = {0: [], 1: ["Awards", "Fun"], 2: ["Stats"]}.get(MODE, [])
+extra_tabs = {0: [], 1: ["Awards", "Fun"], 2: ["Stats"], 3: ["Stats"]}.get(MODE, [])
 pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (extra_tabs if authed else [])
 if st.session_state.get("page") not in pages:
     st.session_state.page = "Leaderboard"
@@ -1013,6 +1249,8 @@ elif page == "Player History":
 elif page in ("Awards", "Stats"):
     if not matches:
         st.info("No matches yet.")
+    elif MODE == 3:
+        stats_views()
     else:
         awards_html(build_awards(matches, everyone=MODE == 2), everyone=MODE == 2)
 
