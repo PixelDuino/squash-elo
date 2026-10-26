@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-MODE = 3  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
+MODE = 1  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
@@ -256,7 +256,7 @@ def build_awards(matches, everyone=False):
     return cards
 
 
-def awards_html(cards, everyone=False):
+def awards_html(cards, everyone=False, reveal=True):
     """Award name on top, winner on the left with the stat on the same line to the right.
     Tap an award to expand it and see the next two players underneath."""
     ordinal = lambda n: {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
@@ -267,7 +267,7 @@ def awards_html(cards, everyone=False):
            ".aw[open] .arrow{transform:rotate(-135deg);margin-bottom:-2px;}</style>"]
     for title, rows, empty in cards:
         winners = [r for r in rows if r[2] == 1]
-        extra = rows[len(winners):] if everyone else rows[len(winners):len(winners) + 2]
+        extra = rows if not reveal else rows[len(winners):] if everyone else rows[len(winners):len(winners) + 2]
         who = " &amp; ".join(html.escape(r[0]) for r in winners) if winners else "No Winner Yet"
         stat = winners[0][1] if winners else empty
         arrow = '<span class="arrow"></span>' if extra else ""
@@ -276,6 +276,10 @@ def awards_html(cards, everyone=False):
                 '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
                 f'<div style="font-weight:700;font-size:1.4rem;">{who}</div>'
                 f'<div style="font-weight:700;font-size:1.2rem;color:#2a9d8f;white-space:nowrap;">{html.escape(stat)}</div></div>')
+        if not reveal:  # just the stat's name and what it measures: names only appear once a card is opened
+            head = ('<div style="display:flex;justify-content:space-between;align-items:center;">'
+                    f'<div style="font-weight:700;font-size:1.15rem;">{html.escape(title)}</div>{arrow}</div>'
+                    f'<div style="opacity:0.65;font-size:0.85rem;">{html.escape(stat_meta(title)["desc"])}</div>')
         box = "border-top:1px solid rgba(128,128,128,0.25);padding:12px 4px;"
         if not extra:
             out.append(f'<div style="{box}">{head}</div>')
@@ -656,7 +660,7 @@ def view_dots(cards):
         out.append('<div style="border-top:1px solid rgba(128,128,128,0.25);padding:12px 4px 8px;">'
                    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">'
                    f'<div style="font-weight:700;">{html.escape(title)}</div>'
-                   f'<div style="color:#2a9d8f;font-weight:700;font-size:0.9rem;text-align:right;">{html.escape(" & ".join(r[0] for r in best))}</div></div>'
+                   '</div>'
                    f'<div style="position:relative;height:{len(lane_x) * 24 + 10}px;margin-top:4px;">'
                    '<div style="position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(128,128,128,0.35);"></div>' + dots + '</div>'
                    '<div style="display:flex;justify-content:space-between;font-size:0.8rem;opacity:0.7;margin-top:3px;">'
@@ -770,7 +774,7 @@ def stats_views():
     view = st.radio("View", STAT_VIEWS, horizontal=True, key="stats_view", label_visibility="collapsed")
     cards = build_awards(matches, everyone=True)
     if view == "Cards":
-        awards_html(cards, everyone=True)
+        awards_html(cards, everyone=True, reveal=False)
     elif view == "Bars":
         view_bars(cards)
     elif view == "Dots":
@@ -842,9 +846,10 @@ def button_grid(grid_key, cells, cols=4):
 def compare_table(a, b, rows):
     """Side-by-side comparison: names on top, stat label in the middle, each player's number on their side.
     rows = [(label, (shown_a, number_a), (shown_b, number_b)), ...]. The higher number is highlighted."""
-    line = "border-top:1px solid rgba(128,128,128,0.25);padding:8px 4px;"
+    line = ("border-top:1px solid rgba(128,128,128,0.25);padding:8px 4px;line-height:1.2;"
+            "display:flex;align-items:center;justify-content:center;")
     name_css = "font-weight:700;font-size:1.15rem;padding-bottom:8px;"
-    out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:baseline;text-align:center;">',
+    out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;text-align:center;">',
            f'<div style="{name_css}">{html.escape(a)}</div><div></div>',
            f'<div style="{name_css}">{html.escape(b)}</div>']
     for label, (sa, na), (sb, nb) in rows:
@@ -856,8 +861,56 @@ def compare_table(a, b, rows):
     st.markdown("".join(out), unsafe_allow_html=True)
 
 
+def admin_tools():
+    """Add and manage players. Lives in the side panel (the small arrow at the top left), for logged-in users only."""
+    if "side_flash" in st.session_state:
+        st.success(st.session_state.pop("side_flash"))
+    with st.form("add", clear_on_submit=True):
+        name = st.text_input("New Player")
+        if st.form_submit_button("Add Player") and name.strip():
+            name = name.strip()
+            if name.lower() in [p.lower() for p in players]:
+                st.error("That player already exists.")
+            else:
+                players[name] = START_RATING
+                save(data, sha, f"Add player {name}")
+                st.session_state.side_flash = f"Added {name}"
+                st.rerun()
+
+    if players:
+        st.divider()
+        st.subheader("Manage Players")
+        who = pick(st, "Player", sorted(players), key="manage_who")
+        with st.form("rename", clear_on_submit=True):
+            new = st.text_input("New Name")
+            if st.form_submit_button("Rename Player"):
+                new = new.strip()
+                if not new:
+                    st.error("Enter a new name.")
+                elif new == who:
+                    st.error("That is already their name.")
+                elif new.lower() in [p.lower() for p in players if p != who]:
+                    st.error("Another player already has that name.")
+                else:
+                    rename_player(players, matches + pending, who, new)
+                    save(data, sha, f"Rename {who} to {new}")
+                    forget_names()
+                    st.session_state.side_flash = f"Renamed {who} to {new}. All their matches were updated."
+                    st.rerun()
+        played = sum(who in (m["p1"], m["p2"]) for m in matches + pending)
+        if played:
+            st.caption(f"{who} is in {played} match{'' if played == 1 else 'es'} (counting any waiting for approval), "
+                       "so they can't be removed. Delete or cancel those in Match History first if you really want to remove them.")
+        elif st.checkbox(f"I Want To Remove {who}", key=f"rm_ok_{who}") and st.button("Remove Player"):
+            del players[who]
+            save(data, sha, f"Remove player {who}")
+            forget_names()
+            st.session_state.side_flash = f"Removed {who}."
+            st.rerun()
+
+
 # ---------- page ----------
-st.set_page_config(page_title="Squash Elo")
+st.set_page_config(page_title="Squash Elo", initial_sidebar_state="collapsed")
 st.title("Squash Elo")
 data, sha = load()
 players, matches = data["players"], data["matches"]
@@ -914,7 +967,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 extra_tabs = {0: [], 1: ["Awards", "Fun"], 2: ["Stats"], 3: ["Stats"]}.get(MODE, [])
-pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (extra_tabs if authed else [])
+if authed:
+    with st.sidebar:
+        admin_tools()
+
+public_tabs = {2: ["Stats"]}.get(MODE, [])  # mode 2: everyone can see Stats, no login needed
+pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (extra_tabs if authed else public_tabs)
 if st.session_state.get("page") not in pages:
     st.session_state.page = "Leaderboard"
 page = st.radio("Page", pages, horizontal=True, key="page", label_visibility="collapsed")
@@ -969,49 +1027,6 @@ if page == "Leaderboard":
             else:
                 st.info("Tap at least one player to show their rating history.")
     rating_chart()
-
-    if authed:
-        with st.form("add", clear_on_submit=True):
-            name = st.text_input("New Player")
-            if st.form_submit_button("Add Player") and name.strip():
-                name = name.strip()
-                if name.lower() in [p.lower() for p in players]:
-                    st.error("That player already exists.")
-                else:
-                    players[name] = START_RATING
-                    save(data, sha, f"Add player {name}")
-                    st.session_state.flash = f"Added {name}"
-                    st.rerun()
-
-        if players:
-            st.subheader("Manage Players")
-            who = pick(st, "Player", sorted(players), key="manage_who")
-            with st.form("rename", clear_on_submit=True):
-                new = st.text_input("New Name")
-                if st.form_submit_button("Rename Player"):
-                    new = new.strip()
-                    if not new:
-                        st.error("Enter a new name.")
-                    elif new == who:
-                        st.error("That is already their name.")
-                    elif new.lower() in [p.lower() for p in players if p != who]:
-                        st.error("Another player already has that name.")
-                    else:
-                        rename_player(players, matches + pending, who, new)
-                        save(data, sha, f"Rename {who} to {new}")
-                        forget_names()
-                        st.session_state.flash = f"Renamed {who} to {new}. All their matches were updated."
-                        st.rerun()
-            played = sum(who in (m["p1"], m["p2"]) for m in matches + pending)
-            if played:
-                st.caption(f"{who} is in {played} match{'' if played == 1 else 'es'} (counting any waiting for approval), "
-                           "so they can't be removed. Delete or cancel those in Match History first if you really want to remove them.")
-            elif st.checkbox(f"I Want To Remove {who}", key=f"rm_ok_{who}") and st.button("Remove Player"):
-                del players[who]
-                save(data, sha, f"Remove player {who}")
-                forget_names()
-                st.session_state.flash = f"Removed {who}."
-                st.rerun()
 
 # ----- enter match -----
 elif page == "Enter Match":
@@ -1184,16 +1199,15 @@ elif page == "Player History":
                              "Result": "Win" if m["winner"] == name else "Loss",
                              "Score": f"{a}-{b}" if me == "p1" else f"{b}-{a}",
                              "Rating": f"{before:.0f} → {after:.0f}", "Change": f"{after - before:+.1f}"})
-            st.metric("Current Rating", round(ratings[-1]))
-            if hist:
-                last5 = hist[-5:]
-                badges = "".join(
-                    '<span style="display:inline-block;width:2rem;height:2rem;line-height:2rem;text-align:center;'
-                    'border-radius:6px;margin-right:6px;font-weight:700;color:#fff;'
-                    f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
-                    for h in last5)
-                st.markdown(f"**Recent Form** (Last {len(last5)}, Latest On The Right)<div style='margin-top:6px'>{badges}</div>",
-                            unsafe_allow_html=True)
+            badges = "".join(
+                '<span style="display:inline-block;width:2rem;height:2rem;line-height:2rem;text-align:center;'
+                'border-radius:6px;font-weight:700;color:#fff;'
+                f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
+                for h in hist[-5:])
+            st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:6px;">'
+                        '<div><div style="font-size:0.875rem;opacity:0.65;">Current Rating</div>'
+                        f'<div style="font-size:2.25rem;line-height:1.2;">{round(ratings[-1])}</div></div>'
+                        f'<div style="display:flex;gap:6px;padding-bottom:6px;">{badges}</div></div>', unsafe_allow_html=True)
             # Fixed chart: no .interactive(), so it can't be dragged or zoomed. It stretches to fit the page
             # and the axes automatically rescale to fit every match.
             chart_df = pd.DataFrame({"Match": range(len(ratings)), "Rating": ratings})
@@ -1216,30 +1230,29 @@ elif page == "Player History":
                         o = m["p2"] if m["p1"] == name else m["p1"]
                         played[o] = (played.get(o, (0, 0))[0] + 1, k)
                 fav = max((o for o in played if o in others), key=lambda o: played[o], default=others[0])  # tie: the latest
-                opp = pick(st, "Versus", others, index=others.index(fav), key=f"hist_opp_{name}")
-                h2h = [m for m in matches if {m["p1"], m["p2"]} == {name, opp}]
+                opp = pick(st, "Versus", others, index=others.index(fav), key=f"hist_opp_{name}", label_visibility="collapsed")
+                h2h = [(k + 1, m) for k, m in enumerate(matches) if {m["p1"], m["p2"]} == {name, opp}]  # (match number, match)
                 if not h2h:
                     st.info(f"{name} and {opp} haven't played each other yet.")
                 else:
                     n = len(h2h)
                     wins, pts, rows = {name: 0, opp: 0}, {name: 0, opp: 0}, []
-                    for m in h2h:
+                    for num, m in h2h:
                         s = dict(zip((m["p1"], m["p2"]), m["score"]))
                         wins[m["winner"]] += 1
                         pts[name] += s[name]
                         pts[opp] += s[opp]
-                        rows.append({"Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
+                        rows.append({"#": num, "Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
                     compare_table(name, opp, [
                         ("Rating", (f"{players[name]:.0f}", players[name]), (f"{players[opp]:.0f}", players[opp])),
                         ("Matches Won", (wins[name], wins[name]), (wins[opp], wins[opp])),
                         ("Points Won", (pts[name], pts[name]), (pts[opp], pts[opp])),
                         ("Win %", (f"{100 * wins[name] / n:.0f}%", wins[name]), (f"{100 * wins[opp] / n:.0f}%", wins[opp])),
                     ])
-                    st.markdown(f"**Matches Played Together ({n})**")
                     st.dataframe(pd.DataFrame(rows[::-1]), hide_index=True)
 
             if hist:
-                st.subheader("All Matches")
+                st.subheader(f"All Matches ({len(hist)})")
                 st.dataframe(pd.DataFrame(hist[::-1]), hide_index=True)
         else:
             st.info("No players yet.")
@@ -1252,7 +1265,7 @@ elif page in ("Awards", "Stats"):
     elif MODE == 3:
         stats_views()
     else:
-        awards_html(build_awards(matches, everyone=MODE == 2), everyone=MODE == 2)
+        awards_html(build_awards(matches, everyone=MODE == 2), everyone=MODE == 2, reveal=MODE != 2)
 
 # ----- fun (logged in only) -----
 else:
