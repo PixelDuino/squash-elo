@@ -16,7 +16,6 @@ import streamlit as st
 MODE = 2  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
 START_RATING, K_FACTOR = 1000, 32
-SCHEDULE_ADJUSTMENT_SCALE = 100  # maximum bonus/penalty for a consistently toughest/softest schedule
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Toughest Schedule, PER) count
 # Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
 # Every player keeps one colour on the rating graphs: colours are handed out in the order players were added.
@@ -458,54 +457,6 @@ def toughness_edges(matches):
                 count[who] = count.get(who, 0) + 1
         latest[m["p1"]], latest[m["p2"]] = m["p1_after"], m["p2_after"]
     return {p: total[p] / count[p] for p in count}
-
-
-def adjusted_rating_data(players, matches):
-    """READ-ONLY schedule-adjusted ratings and per-player rating timelines.
-
-    Each opponent is assessed against the other players available at that point in
-    the match sequence. The running average edge (-1 to +1) is converted into a
-    modest +/- 50 point adjustment. Original Elo values and saved match data are
-    never changed.
-    """
-    latest, total, count, played = {}, {}, {}, {}
-    rows, match_values = [], []
-    current = dict(players)
-
-    for m in matches:
-        before_adj, edges = {}, {}
-        for me, other in (("p1", "p2"), ("p2", "p1")):
-            who = m[me]
-            avg_edge = total.get(who, 0.0) / count[who] if count.get(who) else 0.0
-            before_adj[me] = m[me + "_before"] + SCHEDULE_ADJUSTMENT_SCALE * avg_edge
-
-            opp = m[other]
-            field = {q: r for q, r in latest.items() if q not in (who, opp)}
-            field[opp] = m[other + "_before"]
-            if len(field) >= 2:
-                edges[me] = match_edge(field, m[other + "_before"])
-
-        for me, other in (("p1", "p2"), ("p2", "p1")):
-            who = m[me]
-            if me in edges:
-                total[who] = total.get(who, 0.0) + edges[me]
-                count[who] = count.get(who, 0) + 1
-            avg_edge = total.get(who, 0.0) / count[who] if count.get(who) else 0.0
-            after_adj = m[me + "_after"] + SCHEDULE_ADJUSTMENT_SCALE * avg_edge
-            current[who] = after_adj
-
-            played[who] = played.get(who, 0) + 1
-            if played[who] == 1:
-                rows.append({"Game": 0, "Player": who, "Rating": before_adj[me]})
-            rows.append({"Game": played[who], "Player": who, "Rating": after_adj})
-
-        match_values.append({
-            "p1_before": before_adj["p1"], "p1_after": current[m["p1"]],
-            "p2_before": before_adj["p2"], "p2_after": current[m["p2"]],
-        })
-        latest[m["p1"]], latest[m["p2"]] = m["p1_after"], m["p2_after"]
-
-    return current, pd.DataFrame(rows, columns=["Game", "Player", "Rating"]), match_values
 
 
 def card_stats(name):
@@ -952,24 +903,11 @@ def admin_tools():
 
 # ---------- page ----------
 st.set_page_config(page_title="Squash Elo", initial_sidebar_state="collapsed")
+st.title("Squash Elo")
 data, sha = load()
 players, matches = data["players"], data["matches"]
 pending = data.setdefault("pending", [])  # results waiting for approval: they change nothing until approved
 authed = st.session_state.get("auth", False)
-
-# The native Streamlit three-dot menu is not customisable, so these display settings
-# live in a compact popover at the top-right of the app instead.
-title_col, settings_col = st.columns([5, 1])
-with title_col:
-    st.title("Squash Elo")
-with settings_col:
-    with st.popover("⚙️", help="Display settings", use_container_width=True):
-        adjusted_mode = st.checkbox("Strength-adjusted ratings", key="adjusted_ratings",
-                                    help="Adjust ratings according to the strength of opponents faced.")
-        st.caption("When enabled, the leaderboard and player rating history use schedule-adjusted ratings.")
-
-adjusted_players, adjusted_timeline, adjusted_matches = adjusted_rating_data(players, matches)
-display_ratings = adjusted_players if st.session_state.get("adjusted_ratings", False) else players
 
 with st.expander("Logged In" if authed else "Login (Needed To Edit)"):
     if authed:
@@ -1038,12 +976,10 @@ if page == "Leaderboard":
         loser = m["p2"] if m["winner"] == m["p1"] else m["p1"]
         stats[m["winner"]][0] += 1
         stats[loser][1] += 1
-    rows = [{"Rank": i, "Player": p, "Rating": round(display_ratings[p]), "Played": sum(stats[p]),
+    rows = [{"Rank": i, "Player": p, "Rating": round(players[p]), "Played": sum(stats[p]),
              "W": stats[p][0], "L": stats[p][1],
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
-            for i, p in enumerate(sorted(players, key=lambda x: -display_ratings[x]), 1)]
-    if st.session_state.get("adjusted_ratings", False):
-        st.caption(f"Strength-adjusted mode: schedule difficulty contributes up to +/-{SCHEDULE_ADJUSTMENT_SCALE} rating points.")
+            for i, p in enumerate(sorted(players, key=lambda x: -players[x]), 1)]
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, height=35 * (len(rows) + 1) + 3,
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
@@ -1055,8 +991,8 @@ if page == "Leaderboard":
     def rating_chart():
         if matches:
             st.subheader("Rating History")
-            tl = adjusted_timeline if st.session_state.get("adjusted_ratings", False) else rating_timeline(matches)
-            ranked = [p for p in sorted(players, key=lambda x: -display_ratings[x]) if p in set(tl["Player"])]
+            tl = rating_timeline(matches)
+            ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
             if "chart_sel" not in st.session_state:
                 st.session_state.chart_sel = ranked[:6]  # start with the top 6
             shown = [p for p in st.session_state.chart_sel if p in ranked]
@@ -1245,16 +1181,12 @@ elif page == "Player History":
         if players:
             name = pick(st, "Player", sorted(players), key="hist_player")
             ratings, hist = [START_RATING], []
-            for match_index, m in enumerate(matches):
+            for m in matches:
                 if name not in (m["p1"], m["p2"]):
                     continue
                 me = "p1" if m["p1"] == name else "p2"
                 a, b = m["score"]
-                if st.session_state.get("adjusted_ratings", False):
-                    before = adjusted_matches[match_index][me + "_before"]
-                    after = adjusted_matches[match_index][me + "_after"]
-                else:
-                    before, after = m[me + "_before"], m[me + "_after"]
+                before, after = m[me + "_before"], m[me + "_after"]
                 ratings.append(after)
                 hist.append({"Date": m["date"], "Opponent": m["p2"] if me == "p1" else m["p1"],
                              "Result": "Win" if m["winner"] == name else "Loss",
@@ -1306,8 +1238,7 @@ elif page == "Player History":
                         pts[opp] += s[opp]
                         rows.append({"#": num, "Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
                     compare_table(name, opp, [
-                        ("Rating", (f"{display_ratings[name]:.0f}", display_ratings[name]),
-                         (f"{display_ratings[opp]:.0f}", display_ratings[opp])),
+                        ("Rating", (f"{players[name]:.0f}", players[name]), (f"{players[opp]:.0f}", players[opp])),
                         ("Matches Won", (wins[name], wins[name]), (wins[opp], wins[opp])),
                         ("Points Won", (pts[name], pts[name]), (pts[opp], pts[opp])),
                         ("Win %", (f"{100 * wins[name] / n:.0f}%", wins[name]), (f"{100 * wins[opp] / n:.0f}%", wins[opp])),
