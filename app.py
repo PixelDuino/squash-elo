@@ -16,7 +16,7 @@ import streamlit as st
 MODE = 2  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
 START_RATING, K_FACTOR = 1000, 32
-SCHEDULE_ADJUSTMENT_SCALE = 50  # maximum bonus/penalty for a consistently toughest/softest schedule
+SCHEDULE_ADJUSTMENT_SCALE = 100  # maximum bonus/penalty for a consistently toughest/softest schedule
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Toughest Schedule, PER) count
 # Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
 # Every player keeps one colour on the rating graphs: colours are handed out in the order players were added.
