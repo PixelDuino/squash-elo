@@ -13,10 +13,10 @@ import pandas as pd
 import requests
 import streamlit as st
 
-MODE = 2# Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
+MODE = 2  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
 START_RATING, K_FACTOR = 1000, 32
-MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Brick Wall) count
+MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Toughest Schedule, PER) count
 # Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
 # Every player keeps one colour on the rating graphs: colours are handed out in the order players were added.
 PLAYER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#17becf", "#bcbd22",
@@ -65,13 +65,13 @@ def elo(r1, r2, s1):
     return r1 + K_FACTOR * (s1 - e1), r2 + K_FACTOR * ((1 - s1) - (1 - e1))
 
 
-SCORE_RULES = ("Games go to 11, win by 2 (11-9, 12-10, 13-11, 14-12). "
-               "At 14-14 the next point wins, so the highest score is 15-14.")
+SCORE_RULES = ("Games go to 11, win by 2 (11-9, 12-10, 13-11, 14-12, 15-13). "
+               "At 14-14 the next point wins, so the highest scores are 15-13 and 15-14.")
 
 
 def valid_game(a, b):
     hi, lo = max(a, b), min(a, b)
-    return (hi == 11 and lo <= 9) or (12 <= hi <= 14 and hi - lo == 2) or (hi == 15 and lo == 14)
+    return (hi == 11 and lo <= 9) or (12 <= hi <= 14 and hi - lo == 2) or (hi == 15 and lo in (13, 14))
 
 
 def shutout_bonus(a, b):
@@ -204,13 +204,11 @@ def build_awards(matches, everyone=False):
         latest[m["p1"]], latest[m["p2"]] = m["p1_after"], m["p2_after"]
 
     # Toughest Schedule: average rating of opponents at the time they were played
-    opp_sum, beaten = {}, {}
+    opp_sum = {}
     for m in matches:
         a, b = m["score"]
-        for me, other, won in (("p1", "p2", a > b), ("p2", "p1", b > a)):
+        for me, other in (("p1", "p2"), ("p2", "p1")):
             opp_sum[m[me]] = opp_sum.get(m[me], 0) + m[other + "_before"]
-            if won:
-                beaten.setdefault(m[me], set()).add(m[other])
 
     # Player Efficiency Rating (PER): each stat is converted to a z-score against the other qualified players
     # (how many standard deviations above or below the group average), blended with PER_WEIGHTS, then
@@ -240,15 +238,11 @@ def build_awards(matches, everyone=False):
         ("Giant Killer", ranked(upset, lambda v: f"+{v:.0f} Rating Gap"), "No Upsets Yet"),
         ("Hot Streak", ranked({p: v for p, v in longest.items() if v > 0},
                               lambda v: plural(v, "Win") + " In A Row"), ""),
-        ("Brick Wall", ranked({p: -d["a"] / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
-                              lambda v: f"{-v:.1f} Pts Against Per Game"), needs),
         ("Nail Biter", ranked(close, lambda v: plural(v, "Close Game")), "No Close Games Yet"),
         ("Peak Performer", ranked(peak, lambda v: f"{v:.0f} Rating"), ""),
         ("Longest Reign", ranked(reign, lambda v: f"{v} Match{'' if v == 1 else 'es'} At No. 1"), ""),
         ("Toughest Schedule", ranked({p: opp_sum[p] / d["g"] for p, d in ps.items() if d["g"] >= MIN_GAMES},
                                      lambda v: f"{v:.0f} Average Opponent"), needs),
-        ("Conqueror", ranked({p: len(v) for p, v in beaten.items()},
-                             lambda v: plural(v, "Opponent") + " Beaten"), "No Wins Yet"),
     ]
     if everyone:  # Stats view: also list players who don't qualify for a stat yet, at the bottom
         cards = [(t, rows + [(p, empty if empty.startswith("Needs") else "None", None, None)
@@ -559,12 +553,10 @@ STAT_META = {  # tile = button label, short = table heading, fmt = number format
     "Iron Legs": dict(tile="Iron Legs", short="Games", fmt="%d", disp=None, desc="Total games played."),
     "Giant Killer": dict(tile="Giant Killer", short="Giant", fmt="%+.0f", disp=None, desc="Biggest rating gap overcome in a win."),
     "Hot Streak": dict(tile="Hot Streak", short="Streak", fmt="%d", disp=None, desc="Longest run of wins in a row."),
-    "Brick Wall": dict(tile="Brick Wall", short="Wall", fmt="%.1f", disp=lambda v: -v, desc="Average points conceded per game. Fewer is better."),
     "Nail Biter": dict(tile="Nail Biter", short="Nail", fmt="%d", disp=None, desc="Games decided by 3 points or fewer, won or lost."),
     "Peak Performer": dict(tile="Peak Performer", short="Peak", fmt="%.0f", disp=None, desc="Highest rating ever reached."),
     "Longest Reign": dict(tile="Longest Reign", short="Reign", fmt="%d", disp=None, desc="Matches played while sitting at number 1."),
     "Toughest Schedule": dict(tile="Tough Schedule", short="Sched", fmt="%.0f", disp=None, desc="Average rating of the opponents faced."),
-    "Conqueror": dict(tile="Conqueror", short="Conq", fmt="%d", disp=None, desc="Different opponents beaten."),
 }
 STAT_VIEWS = ["Cards", "Bars", "Dots", "Heatmap", "Medals", "Radar"]
 
@@ -849,7 +841,7 @@ def compare_table(a, b, rows):
     line = ("border-top:1px solid rgba(128,128,128,0.25);padding:8px 4px;line-height:1.2;"
             "display:flex;align-items:center;justify-content:center;")
     name_css = "font-weight:700;font-size:1.15rem;padding-bottom:8px;"
-    out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;text-align:center;">',
+    out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;text-align:center;padding-bottom:18px;">',
            f'<div style="{name_css}">{html.escape(a)}</div><div></div>',
            f'<div style="{name_css}">{html.escape(b)}</div>']
     for label, (sa, na), (sb, nb) in rows:
@@ -1006,6 +998,7 @@ if page == "Leaderboard":
             shown = [p for p in st.session_state.chart_sel if p in ranked]
             st.caption("Tap a player to show or hide their line.")
             button_grid("grid_chart", [(p, f"chart_{p}", p in shown, toggle_chart, (p,)) for p in ranked])
+            st.markdown('<div style="height:14px;"></div>', unsafe_allow_html=True)  # a little room before the graph
             tl = tl[tl["Player"].isin(shown)]
             if shown:
                 # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
@@ -1204,9 +1197,10 @@ elif page == "Player History":
                 'border-radius:6px;font-weight:700;color:#fff;'
                 f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
                 for h in hist[-5:])
-            st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:6px;">'
-                        '<div><div style="font-size:0.875rem;opacity:0.65;">Current Rating</div>'
-                        f'<div style="font-size:2.25rem;line-height:1.2;">{round(ratings[-1])}</div></div>'
+            st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:20px;">'
+                        '<div><div style="font-size:0.875rem;opacity:0.65;">Current Rating (Highest)</div>'
+                        f'<div style="font-size:2.25rem;line-height:1.2;">{round(ratings[-1])} '
+                        f'<span style="font-size:1.3rem;opacity:0.6;">({round(max(ratings))})</span></div></div>'
                         f'<div style="display:flex;gap:6px;padding-bottom:6px;">{badges}</div></div>', unsafe_allow_html=True)
             # Fixed chart: no .interactive(), so it can't be dragged or zoomed. It stretches to fit the page
             # and the axes automatically rescale to fit every match.
