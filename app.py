@@ -5,10 +5,12 @@ Data lives in squash_data.json inside a separate private GitHub repo, so it surv
 import base64
 import html
 import json
+import math
 import uuid
 from datetime import datetime
 
 import altair as alt
+import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -27,6 +29,7 @@ PER_WEIGHTS = {"win": 0.30,   # win percentage
                "off": 0.15,   # average points won per game
                "dfn": 0.15,   # average points lost per game (fewer is better)
                "sos": 0.15}   # strength of schedule: average rating of opponents played
+ADJUST_PULL = 0.5  # adjusted ratings: how strongly results are pulled back towards 1000 (higher = calmer, lower = trusts the games more)
 MAX_PENDING = 30  # most results that can be waiting for approval at once
 SHUTOUT_BONUS = 5  # extra rating points for winning 11-0 (the loser only gets the normal drop)
 CLOSE_MARGIN = 3  # a game decided by this many points or fewer counts as a close game (Nail Biter)
@@ -98,18 +101,66 @@ def recompute(players, matches):
         players[m["p1"]], players[m["p2"]] = n1, n2
 
 
-def rating_timeline(matches):
+def games_key(matches):
+    """The results as a plain tuple of (winner, loser, winner's rating after, loser's rating after), so the adjusted
+    ratings can be remembered between page loads."""
+    return tuple((m["winner"], m["p2"] if m["winner"] == m["p1"] else m["p1"],
+                  m["p1_after"] if m["winner"] == m["p1"] else m["p2_after"],
+                  m["p2_after"] if m["winner"] == m["p1"] else m["p1_after"]) for m in matches)
+
+
+@st.cache_data(show_spinner=False)
+def adjusted_frames(games):
+    """READ-ONLY: the adjusted rating of everyone, re-worked from ALL the games so far at once, after every game.
+    Instead of trusting each opponent's rating on the day, every result is judged against how strong that opponent
+    has turned out to be over all their games (a Bradley-Terry fit, pulled gently back towards 1000).
+    The result is then put on the same spread as the normal ratings, so the two are easy to compare: the numbers look
+    familiar, but the order (and the gaps between players) reflect who they actually played.
+    Returns a list: item k is {player: adjusted rating} after the first k games (item 0 is empty)."""
+    names = sorted({p for g in games for p in g[:2]})
+    idx = {p: i for i, p in enumerate(names)}
+    n = len(names)
+    win = np.array([idx[g[0]] for g in games], dtype=int)
+    lose = np.array([idx[g[1]] for g in games], dtype=int)
+    raw = {}  # the normal rating of everyone so far
+    scale = 400 / math.log(10)  # turns the fit into the same units as the normal rating
+    theta, frames = np.zeros(n), [{}]
+    for k in range(1, len(games) + 1):
+        w, l = win[:k], lose[:k]
+        for _ in range(10):  # Newton's method, starting from the previous answer so it settles in a couple of steps
+            p = 1 / (1 + np.exp(-(theta[w] - theta[l])))
+            grad = -ADJUST_PULL * theta + np.bincount(w, weights=1 - p, minlength=n) - np.bincount(l, weights=1 - p, minlength=n)
+            pair = np.bincount(w * n + l, weights=p * (1 - p), minlength=n * n).reshape(n, n)
+            pair = pair + pair.T
+            hess = -ADJUST_PULL * np.eye(n) - np.diag(pair.sum(axis=1)) + pair
+            step = np.linalg.solve(hess, -grad)
+            theta = theta + step
+            if np.abs(step).max() < 1e-7:
+                break
+        seen = np.zeros(n, dtype=bool)
+        seen[w] = True
+        seen[l] = True
+        raw[games[k - 1][0]], raw[games[k - 1][1]] = games[k - 1][2], games[k - 1][3]
+        who = [i for i in range(n) if seen[i]]
+        fit = np.array([theta[i] for i in who]) * scale
+        normal = np.array([raw[names[i]] for i in who])
+        factor = normal.std() / fit.std() if fit.std() > 1e-9 else 1.0  # same spread as the normal ratings
+        frames.append({names[i]: normal.mean() + factor * (f - fit.mean()) for i, f in zip(who, fit)})
+    return frames
+
+
+def rating_timeline(matches, adj=None):
     """READ-ONLY: each player's rating after their 1st game, 2nd game, 3rd game... (Game 0 = starting rating).
     Everyone's nth game lines up at the same point, so a player with more games just goes further along.
     Never changes saved data."""
     played, rows = {}, []
-    for m in matches:
+    for step, m in enumerate(matches, 1):
         for who, key in ((m["p1"], "p1"), (m["p2"], "p2")):
             if who not in played:
                 played[who] = 0
-                rows.append({"Game": 0, "Player": who, "Rating": m[key + "_before"]})
+                rows.append({"Game": 0, "Player": who, "Rating": START_RATING if adj else m[key + "_before"]})
             played[who] += 1
-            rows.append({"Game": played[who], "Player": who, "Rating": m[key + "_after"]})
+            rows.append({"Game": played[who], "Player": who, "Rating": adj[step][who] if adj else m[key + "_after"]})
     return pd.DataFrame(rows, columns=["Game", "Player", "Rating"])
 
 
@@ -959,9 +1010,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 extra_tabs = {0: [], 1: ["Awards", "Fun"], 2: ["Stats"], 3: ["Stats"]}.get(MODE, [])
-if authed:
-    with st.sidebar:
+with st.sidebar:
+    st.subheader("Settings")
+    st.checkbox("Use Adjusted Ratings", key="adjusted",
+                help="Re-rates everyone from all their games at once, so a win counts for more or less depending on how strong the opponent turned out to be.")
+    st.caption("Off: ratings as they are now. On: ratings that take the strength of each player's opponents into account.")
+    if authed:
+        st.divider()
         admin_tools()
+adjusted_on = bool(st.session_state.get("adjusted", False))
+adj = adjusted_frames(games_key(matches)) if adjusted_on and matches else None
+
+
+def rating_of(p):
+    """The rating to show for a player: the adjusted one when that setting is on (players with no games keep 1000)."""
+    return adj[-1].get(p, players.get(p, START_RATING)) if adj else players[p]
+
 
 public_tabs = {2: ["Stats"]}.get(MODE, [])  # mode 2: everyone can see Stats, no login needed
 pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (extra_tabs if authed else public_tabs)
@@ -976,10 +1040,11 @@ if page == "Leaderboard":
         loser = m["p2"] if m["winner"] == m["p1"] else m["p1"]
         stats[m["winner"]][0] += 1
         stats[loser][1] += 1
-    rows = [{"Rank": i, "Player": p, "Rating": round(players[p]), "Played": sum(stats[p]),
+    rate_label = "Adj. Rating" if adjusted_on else "Rating"
+    rows = [{"Rank": i, "Player": p, rate_label: round(rating_of(p)), "Played": sum(stats[p]),
              "W": stats[p][0], "L": stats[p][1],
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
-            for i, p in enumerate(sorted(players, key=lambda x: -players[x]), 1)]
+            for i, p in enumerate(sorted(players, key=lambda x: -rating_of(x)), 1)]
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, height=35 * (len(rows) + 1) + 3,
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
@@ -991,8 +1056,8 @@ if page == "Leaderboard":
     def rating_chart():
         if matches:
             st.subheader("Rating History")
-            tl = rating_timeline(matches)
-            ranked = [p for p in sorted(players, key=lambda x: -players[x]) if p in set(tl["Player"])]
+            tl = rating_timeline(matches, adj)
+            ranked = [p for p in sorted(players, key=lambda x: -rating_of(x)) if p in set(tl["Player"])]
             if "chart_sel" not in st.session_state:
                 st.session_state.chart_sel = ranked[:6]  # start with the top 6
             shown = [p for p in st.session_state.chart_sel if p in ranked]
@@ -1181,12 +1246,12 @@ elif page == "Player History":
         if players:
             name = pick(st, "Player", sorted(players), key="hist_player")
             ratings, hist = [START_RATING], []
-            for m in matches:
+            for k, m in enumerate(matches):
                 if name not in (m["p1"], m["p2"]):
                     continue
                 me = "p1" if m["p1"] == name else "p2"
                 a, b = m["score"]
-                before, after = m[me + "_before"], m[me + "_after"]
+                before, after = (ratings[-1], adj[k + 1][name]) if adj else (m[me + "_before"], m[me + "_after"])
                 ratings.append(after)
                 hist.append({"Date": m["date"], "Opponent": m["p2"] if me == "p1" else m["p1"],
                              "Result": "Win" if m["winner"] == name else "Loss",
@@ -1198,7 +1263,7 @@ elif page == "Player History":
                 f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
                 for h in hist[-5:])
             st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:20px;">'
-                        '<div><div style="font-size:0.875rem;opacity:0.65;">Current Rating (Highest)</div>'
+                        f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest)</div>'
                         f'<div style="font-size:2.25rem;line-height:1.2;">{round(ratings[-1])} '
                         f'<span style="font-size:1.3rem;opacity:0.6;">({round(max(ratings))})</span></div></div>'
                         f'<div style="display:flex;gap:6px;padding-bottom:6px;">{badges}</div></div>', unsafe_allow_html=True)
@@ -1238,7 +1303,7 @@ elif page == "Player History":
                         pts[opp] += s[opp]
                         rows.append({"#": num, "Date": m["date"], name: s[name], opp: s[opp], "Winner": m["winner"]})
                     compare_table(name, opp, [
-                        ("Rating", (f"{players[name]:.0f}", players[name]), (f"{players[opp]:.0f}", players[opp])),
+                        ("Adj. Rating" if adjusted_on else "Rating", (f"{rating_of(name):.0f}", rating_of(name)), (f"{rating_of(opp):.0f}", rating_of(opp))),
                         ("Matches Won", (wins[name], wins[name]), (wins[opp], wins[opp])),
                         ("Points Won", (pts[name], pts[name]), (pts[opp], pts[opp])),
                         ("Win %", (f"{100 * wins[name] / n:.0f}%", wins[name]), (f"{100 * wins[opp] / n:.0f}%", wins[opp])),
