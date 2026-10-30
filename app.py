@@ -15,7 +15,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-MODE = 3 # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
+MODE = 2  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Toughest Schedule, PER) count
