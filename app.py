@@ -149,6 +149,42 @@ def adjusted_frames(games):
     return frames
 
 
+@st.cache_data(show_spinner=False)
+def objective_order(games):
+    """READ-ONLY: everyone who has played, best first, ranked purely by WHO BEAT WHOM. No ratings and no scores.
+    It looks for the order that contradicts the fewest results: every game where someone beat a player ranked above
+    them counts as one upset, and this order has as few upsets as it can find. If several orders are equally good,
+    the one closest to the adjusted ratings wins (that is where the search starts from)."""
+    frames = adjusted_frames(games)
+    if not frames[-1]:
+        return []
+    names = sorted(frames[-1], key=lambda p: -frames[-1][p])
+    idx = {p: i for i, p in enumerate(names)}
+    n = len(names)
+    wins = np.zeros((n, n))  # wins[a][b] = how many times a beat b
+    for g in games:
+        wins[idx[g[0]], idx[g[1]]] += 1
+
+    def upsets(order):
+        return float(np.tril(wins[np.ix_(order, order)], -1).sum())  # games won by someone ranked below the loser
+    order = list(range(n))
+    best = upsets(order)
+    for _ in range(60):  # move one player at a time to wherever it removes the most upsets, until nothing improves
+        improved = False
+        for i in range(n):
+            p, rest = order[i], order[:i] + order[i + 1:]
+            best_j, best_cost = i, best
+            for j in sorted(range(n), key=lambda j: abs(j - i)):
+                cost = upsets(rest[:j] + [p] + rest[j:])
+                if cost < best_cost - 1e-9:
+                    best_j, best_cost = j, cost
+            if best_j != i:
+                order, best, improved = rest[:best_j] + [p] + rest[best_j:], best_cost, True
+        if not improved:
+            break
+    return [names[i] for i in order]
+
+
 def rating_timeline(matches, adj=None):
     """READ-ONLY: each player's rating after their 1st game, 2nd game, 3rd game... (Game 0 = starting rating).
     Everyone's nth game lines up at the same point, so a player with more games just goes further along.
@@ -184,7 +220,7 @@ def rename_player(players, matches, old, new):
 
 def forget_names():
     """Clear remembered dropdown choices that may still point at an old or removed name."""
-    for k in ("chart_sel", "hist_player", "manage_who", "card_player"):
+    for k in ("chart_hidden", "hist_player", "manage_who", "card_player"):
         st.session_state.pop(k, None)
     for k in [k for k in st.session_state if str(k).startswith("hist_opp_")]:
         st.session_state.pop(k, None)
@@ -838,10 +874,10 @@ def pick(container, label, options, **kw):
         return container.selectbox(label, options, **kw)
 
 
-def toggle_chart(name):
-    """Tap a player's tile to add or remove their line from the rating history graph."""
-    sel = st.session_state.get("chart_sel", [])
-    st.session_state.chart_sel = [p for p in sel if p != name] if name in sel else sel + [name]
+def toggle_hidden(name):
+    """Tap a name in the key under the graph to hide or show that player's line."""
+    hid = st.session_state.get("chart_hidden", [])
+    st.session_state.chart_hidden = [p for p in hid if p != name] if name in hid else hid + [name]
 
 
 def wide_button(container, label, **kw):
@@ -923,7 +959,7 @@ def admin_tools():
     if players:
         st.divider()
         st.subheader("Manage Players")
-        who = pick(st, "Player", sorted(players), key="manage_who")
+        who = pick(st, "Player", ranking_list, key="manage_who")
         with st.form("rename", clear_on_submit=True):
             new = st.text_input("New Name")
             if st.form_submit_button("Rename Player"):
@@ -1014,17 +1050,23 @@ with st.sidebar:
     st.subheader("Settings")
     st.checkbox("Use Adjusted Ratings", key="adjusted",
                 help="Re-rates everyone from all their games at once, so a win counts for more or less depending on how strong the opponent turned out to be.")
-    st.caption("Off: ratings as they are now. On: ratings that take the strength of each player's opponents into account.")
+    st.checkbox("Use Objective Ranking", key="objective",
+                help="Ranks everyone purely by who beat whom: the order that contradicts the fewest results. Ratings and scores are ignored.")
+    adjusted_on = bool(st.session_state.get("adjusted", False))
+    objective_on = bool(st.session_state.get("objective", False))
+    adj = adjusted_frames(games_key(matches)) if adjusted_on and matches else None
+
+    def rating_of(p):
+        """The rating to show for a player: the adjusted one when that setting is on (players with no games keep 1000)."""
+        return adj[-1].get(p, players.get(p, START_RATING)) if adj else players[p]
+
+    # Everyone in leaderboard order, best first. Every player dropdown uses this order too.
+    played_order = objective_order(games_key(matches)) if objective_on and matches else []
+    ranking_list = (played_order + sorted(p for p in players if p not in set(played_order))) if played_order \
+        else sorted(players, key=lambda x: -rating_of(x))
     if authed:
         st.divider()
         admin_tools()
-adjusted_on = bool(st.session_state.get("adjusted", False))
-adj = adjusted_frames(games_key(matches)) if adjusted_on and matches else None
-
-
-def rating_of(p):
-    """The rating to show for a player: the adjusted one when that setting is on (players with no games keep 1000)."""
-    return adj[-1].get(p, players.get(p, START_RATING)) if adj else players[p]
 
 
 public_tabs = {2: ["Stats"]}.get(MODE, [])  # mode 2: everyone can see Stats, no login needed
@@ -1041,10 +1083,11 @@ if page == "Leaderboard":
         stats[m["winner"]][0] += 1
         stats[loser][1] += 1
     rate_label = "Adj. Rating" if adjusted_on else "Rating"
-    rows = [{"Rank": i, "Player": p, rate_label: round(rating_of(p)), "Played": sum(stats[p]),
+    rank_label = "Obj. Rank" if objective_on else "Rank"
+    rows = [{rank_label: i, "Player": p, rate_label: round(rating_of(p)), "Played": sum(stats[p]),
              "W": stats[p][0], "L": stats[p][1],
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
-            for i, p in enumerate(sorted(players, key=lambda x: -rating_of(x)), 1)]
+            for i, p in enumerate(ranking_list, 1)]
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, height=35 * (len(rows) + 1) + 3,
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
@@ -1057,13 +1100,9 @@ if page == "Leaderboard":
         if matches:
             st.subheader("Rating History")
             tl = rating_timeline(matches, adj)
-            ranked = [p for p in sorted(players, key=lambda x: -rating_of(x)) if p in set(tl["Player"])]
-            if "chart_sel" not in st.session_state:
-                st.session_state.chart_sel = ranked[:6]  # start with the top 6
-            shown = [p for p in st.session_state.chart_sel if p in ranked]
-            st.caption("Tap a player to show or hide their line.")
-            button_grid("grid_chart", [(p, f"chart_{p}", p in shown, toggle_chart, (p,)) for p in ranked])
-            st.markdown('<div style="height:14px;"></div>', unsafe_allow_html=True)  # a little room before the graph
+            ranked = [p for p in ranking_list if p in set(tl["Player"])]
+            hidden = [p for p in st.session_state.get("chart_hidden", []) if p in ranked]
+            shown = [p for p in ranked if p not in hidden]
             tl = tl[tl["Player"].isin(shown)]
             if shown:
                 # Fixed chart (no .interactive()): can't be dragged or zoomed, stretches to fit the page.
@@ -1076,14 +1115,24 @@ if page == "Leaderboard":
                                  tooltip=["Player:N", "Game:Q", alt.Tooltip("Rating:Q", format=".0f")])
                          .properties(width="container", height=320))
                 st.altair_chart(chart)
-                # Our own key under the graph: wraps onto more lines as needed, so no name is ever cut off.
-                st.markdown('<div style="display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:4px;">' + "".join(
-                    f'<span style="display:inline-flex;align-items:center;">'
-                    f'<span style="width:12px;height:12px;border-radius:50%;background:{player_color(p)};'
-                    f'display:inline-block;margin-right:6px;"></span>{html.escape(p)}</span>' for p in shown) + "</div>",
-                    unsafe_allow_html=True)
             else:
-                st.info("Tap at least one player to show their rating history.")
+                st.info("Every line is hidden. Tap a name below to bring it back.")
+            # The key under the graph: one tappable chip per player (coloured dot + full name) that wraps onto
+            # more lines as needed. Tap a chip to hide that player's line; a hidden player is faded and crossed out.
+            rules = "".join(f".st-key-ck_{i}{{--dot:{player_color(p)};}}" +
+                            (f".st-key-ck_{i} button{{opacity:0.4;text-decoration:line-through;}}" if p in hidden else "")
+                            for i, p in enumerate(ranked))
+            with st.container(key="chartkey"):
+                for i, p in enumerate(ranked):
+                    st.button(p, key=f"ck_{i}", on_click=toggle_hidden, args=(p,))
+            st.markdown("<style>"
+                        ".st-key-chartkey{display:flex !important;flex-direction:row !important;flex-wrap:wrap !important;gap:6px 8px !important;margin-top:8px;}"
+                        ".st-key-chartkey > div{width:auto !important;flex:0 0 auto !important;}"
+                        ".st-key-chartkey button{min-height:2rem;padding:2px 12px 2px 10px;border-radius:999px;background:transparent;"
+                        "border:1px solid rgba(128,128,128,0.35);display:inline-flex;align-items:center;}"
+                        ".st-key-chartkey button p{white-space:nowrap;font-size:0.9rem;}"
+                        ".st-key-chartkey button::before{content:\"\";width:11px;height:11px;border-radius:50%;background:var(--dot,#888);margin-right:7px;flex:none;}"
+                        + rules + "</style>", unsafe_allow_html=True)
     rating_chart()
 
 # ----- enter match -----
@@ -1207,7 +1256,7 @@ elif page == "Match History":
                     format_func=lambda k: f'#{k + 1}  |  {matches[k]["date"]}  |  {matches[k]["p1"]} '
                                           f'{matches[k]["score"][0]}-{matches[k]["score"][1]} {matches[k]["p2"]}')
                 m = matches[i]
-                names = sorted(players)
+                names = ranking_list
                 with st.form(f"edit_{i}"):
                     c1, c2 = st.columns(2)
                     e1 = pick(c1, "Player 1", names, index=names.index(m["p1"]), key=f"e1_{i}")
@@ -1244,7 +1293,7 @@ elif page == "Player History":
     @st.fragment
     def player_history():
         if players:
-            name = pick(st, "Player", sorted(players), key="hist_player")
+            name = pick(st, "Player", ranking_list, key="hist_player")  # starts on the number 1 player
             ratings, hist = [START_RATING], []
             for k, m in enumerate(matches):
                 if name not in (m["p1"], m["p2"]):
@@ -1279,7 +1328,7 @@ elif page == "Player History":
 
             # ----- head to head, right under the graph -----
             st.subheader("Head To Head")
-            others = [p for p in sorted(players) if p != name]
+            others = [p for p in ranking_list if p != name]
             if not others:
                 st.info("Add another player to see head to head stats.")
             else:
@@ -1342,7 +1391,7 @@ else:
         if not players:
             st.info("No players yet.")
             return
-        who = pick(st, "Player", sorted(players, key=lambda x: -players[x]), key="card_player")
+        who = pick(st, "Player", ranking_list, key="card_player")
         c = card_stats(who)
         if c is None:
             st.info(f"{who} hasn't played yet, so there's no card to show.")
