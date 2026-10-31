@@ -17,6 +17,16 @@ import streamlit as st
 
 MODE = 2  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
+# ---------- visual themes ----------
+# Independent of player colours: changing the app theme never changes graph identities.
+THEMES = {
+    "Oak & Oxblood": dict(bg="#F3EDE3", surface="#FBF8F2", surface2="#E8DDCC", text="#30251F", muted="#76675B", accent="#A33D35", accent_text="#FFFFFF", border="#D5C5B1"),
+    "Clubhouse Green": dict(bg="#EAF0E8", surface="#F8FAF6", surface2="#DCE7D9", text="#203329", muted="#637568", accent="#28634B", accent_text="#FFFFFF", border="#C5D4C4"),
+    "Midnight Court": dict(bg="#171D29", surface="#222B3A", surface2="#303D50", text="#F0F2F5", muted="#AAB5C4", accent="#E0A84B", accent_text="#1D2430", border="#3B485B"),
+    "Graphite & Lime": dict(bg="#202322", surface="#2A302E", surface2="#39413D", text="#F1F3EF", muted="#AEB8B0", accent="#B7D66B", accent_text="#20271D", border="#46504A"),
+    "Clean Classic": dict(bg="#FFFFFF", surface="#FFFFFF", surface2="#F1F3F5", text="#252A32", muted="#68717D", accent="#D94B45", accent_text="#FFFFFF", border="#DDE1E6"),
+}
+
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Toughest Schedule, PER) count
 # Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
@@ -1028,8 +1038,8 @@ st.markdown("""
 :is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] { gap: 0; flex-wrap: wrap; border-bottom: 1px solid rgba(128,128,128,0.35); }
 :is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label { padding: 8px 14px; margin: 0; cursor: pointer; border-bottom: 2px solid transparent; }
 :is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label > div:first-child { display: none; }
-:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #ff4b4b; }
-:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) { border-bottom-color: var(--app-accent, #ff4b4b); }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) p { color: var(--app-accent, #ff4b4b); font-weight: 600; }
 /* hide the little hover toolbar (download CSV, fullscreen, search) on tables and graphs */
 [data-testid="stElementToolbar"], [data-testid="stDataFrameToolbar"], .vega-embed details, .vega-embed summary { display: none !important; }
 /* pull the title up closer to the top bar */
@@ -1048,6 +1058,14 @@ st.markdown("""
 extra_tabs = {0: [], 1: ["Awards", "Fun"], 2: ["Stats"], 3: ["Stats"]}.get(MODE, [])
 with st.sidebar:
     st.subheader("Settings")
+    with st.expander("Appearance", expanded=False):
+        st.selectbox(
+            "Colour theme", list(THEMES), key="app_theme",
+            index=list(THEMES).index(st.session_state.get("app_theme", "Oak & Oxblood"))
+            if st.session_state.get("app_theme", "Oak & Oxblood") in THEMES else 0,
+            help="Changes the app colours only; player graph colours stay the same."
+        )
+
     st.checkbox("Use Adjusted Ratings", key="adjusted",
                 help="Re-rates everyone from all their games at once, so a win counts for more or less depending on how strong the opponent turned out to be.")
     st.checkbox("Use Objective Ranking", key="objective",
@@ -1068,6 +1086,31 @@ with st.sidebar:
         st.divider()
         admin_tools()
 
+
+
+# Apply the selected palette globally; the selector stays tucked away in the sidebar.
+theme = THEMES.get(st.session_state.get("app_theme", "Oak & Oxblood"), THEMES["Oak & Oxblood"])
+st.markdown(f"""
+<style>
+:root {{
+ --app-bg:{theme["bg"]}; --app-surface:{theme["surface"]}; --app-surface2:{theme["surface2"]};
+ --app-fg:{theme["text"]}; --app-muted:{theme["muted"]}; --app-accent:{theme["accent"]};
+ --app-accent-text:{theme["accent_text"]}; --app-border:{theme["border"]};
+}}
+.stApp {{background:var(--app-bg);color:var(--app-fg)}}
+[data-testid="stHeader"] {{background:color-mix(in srgb,var(--app-bg) 92%,transparent)}}
+[data-testid="stSidebar"] {{background:var(--app-surface);border-right:1px solid var(--app-border)}}
+.stApp [data-testid="stMarkdownContainer"],.stApp label,.stApp p,.stApp h1,.stApp h2,.stApp h3 {{color:var(--app-fg)}}
+.stApp [data-testid="stCaptionContainer"] {{color:var(--app-muted)}}
+.stApp [data-testid="stVerticalBlockBorderWrapper"],.stApp [data-testid="stExpander"] {{border-color:var(--app-border)}}
+.stApp [data-testid="stDataFrame"],.stApp [data-testid="stTable"] {{border:1px solid var(--app-border);border-radius:10px;overflow:hidden}}
+.stApp div[data-baseweb="select"]>div,.stApp input,.stApp textarea {{background:var(--app-surface);color:var(--app-fg);border-color:var(--app-border)}}
+.stApp button[kind="primary"],.stApp button[data-testid="baseButton-primary"] {{background:var(--app-accent);color:var(--app-accent-text);border-color:var(--app-accent)}}
+:is(.st-key-page,.st-key-stats_view) div[role="radiogroup"] {{border-bottom-color:var(--app-border)!important}}
+:is(.st-key-page,.st-key-stats_view) div[role="radiogroup"] label:has(input:checked) {{border-bottom-color:var(--app-accent)!important}}
+:is(.st-key-page,.st-key-stats_view) div[role="radiogroup"] label:has(input:checked) p {{color:var(--app-accent)!important}}
+</style>
+""", unsafe_allow_html=True)
 
 public_tabs = {2: ["Stats"]}.get(MODE, [])  # mode 2: everyone can see Stats, no login needed
 pages = ["Leaderboard", "Enter Match", "Match History", "Player History"] + (extra_tabs if authed else public_tabs)
