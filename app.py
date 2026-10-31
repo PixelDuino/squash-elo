@@ -18,7 +18,7 @@ import streamlit as st
 MODE = 2  # Extra tabs when logged in:  0 = none  |  1 = Awards + Fun  |  2 = "Stats" (everyone's numbers), no Fun  |  3 = "Stats" with switchable views
 
 # ---------- visual themes ----------
-# Independent of player colours: changing the app theme never changes graph identities.
+# Each theme owns its complete visual language, including chart series and semantic highlights.
 THEMES = {
     "Oak & Oxblood": dict(bg="#F3EDE3", surface="#FBF8F2", surface2="#E8DDCC", text="#30251F", muted="#76675B", accent="#A33D35", accent_text="#FFFFFF", border="#D5C5B1"),
     "Clubhouse Green": dict(bg="#EAF0E8", surface="#F8FAF6", surface2="#DCE7D9", text="#203329", muted="#637568", accent="#28634B", accent_text="#FFFFFF", border="#C5D4C4"),
@@ -26,14 +26,18 @@ THEMES = {
     "Graphite & Lime": dict(bg="#202322", surface="#2A302E", surface2="#39413D", text="#F1F3EF", muted="#AEB8B0", accent="#B7D66B", accent_text="#20271D", border="#46504A"),
     "Clean Classic": dict(bg="#FFFFFF", surface="#FFFFFF", surface2="#F1F3F5", text="#252A32", muted="#68717D", accent="#D94B45", accent_text="#FFFFFF", border="#DDE1E6"),
 }
+THEME_DETAILS = {
+    "Oak & Oxblood": dict(series=["#8B3A32", "#B56B43", "#526B52", "#C18B45", "#73566B", "#557C83", "#A66B78", "#7B6A4E"], positive="#557653", negative="#A33D35", highlight="#C18B45", gold="#C18B45", silver="#A9A49B", bronze="#A66B4B"),
+    "Clubhouse Green": dict(series=["#28634B", "#A66B3D", "#547D9B", "#9B5D67", "#7C6A9B", "#9A8A43", "#4D8580", "#65745A"], positive="#28634B", negative="#A34D4D", highlight="#B18A3A", gold="#B18A3A", silver="#9AA6A0", bronze="#A66B4B"),
+    "Midnight Court": dict(series=["#E0A84B", "#69B7C4", "#D77B76", "#9C8AD0", "#8FC18B", "#D69AB9", "#8CAED8", "#C4B77B"], positive="#79B98A", negative="#E07A7A", highlight="#E0A84B", gold="#E0B85C", silver="#AAB5C4", bronze="#C68B68"),
+    "Graphite & Lime": dict(series=["#B7D66B", "#69B8A5", "#D5A45B", "#91A8D8", "#D58BA7", "#A99ADB", "#83B7C5", "#C3C58A"], positive="#9CCB72", negative="#E17D78", highlight="#B7D66B", gold="#D5BC61", silver="#AEB8B0", bronze="#C18A68"),
+    "Clean Classic": dict(series=["#D94B45", "#2878B5", "#26966F", "#8A61B5", "#D18A32", "#4C9299", "#B85E8A", "#68717D"], positive="#23865B", negative="#D94B45", highlight="#D18A32", gold="#D8AA35", silver="#AAB1BA", bronze="#B8794D"),
+}
 
 START_RATING, K_FACTOR = 1000, 32
 MIN_GAMES = 3  # games a player needs before average-based awards (Most Dominant, Toughest Schedule, PER) count
 # Player Efficiency Rating: how much each stat counts (weights add up to 1.0)
 # Every player keeps one colour on the rating graphs: colours are handed out in the order players were added.
-PLAYER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#17becf", "#bcbd22",
-                 "#393b79", "#e6550d", "#31a354", "#756bb1", "#843c39", "#d6a300", "#00a6a6", "#c51b8a", "#637939",
-                 "#5254a3", "#7f7f7f"]
 PER_WEIGHTS = {"win": 0.30,   # win percentage
                "diff": 0.25,  # average point difference per game (points won minus points lost)
                "off": 0.15,   # average points won per game
@@ -212,7 +216,13 @@ def rating_timeline(matches, adj=None):
 
 def player_color(name):
     order = list(players)
-    return PLAYER_COLORS[order.index(name) % len(PLAYER_COLORS)] if name in order else "#7f7f7f"
+    palette = THEME_DETAILS.get(st.session_state.get("app_theme", "Oak & Oxblood"), THEME_DETAILS["Oak & Oxblood"])["series"]
+    return palette[order.index(name) % len(palette)] if name in order else theme.get("muted", "#7f7f7f")
+
+
+def semantic_color(key):
+    palette = THEME_DETAILS.get(st.session_state.get("app_theme", "Oak & Oxblood"), THEME_DETAILS["Oak & Oxblood"])
+    return palette[key]
 
 
 def rename_player(players, matches, old, new):
@@ -366,12 +376,12 @@ def awards_html(cards, everyone=False, reveal=True):
                 f'<div style="font-weight:700;font-size:0.95rem;opacity:0.75;">{html.escape(title)}</div>{arrow}</div>'
                 '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
                 f'<div style="font-weight:700;font-size:1.4rem;">{who}</div>'
-                f'<div style="font-weight:700;font-size:1.2rem;color:#2a9d8f;white-space:nowrap;">{html.escape(stat)}</div></div>')
+                f'<div style="font-weight:700;font-size:1.2rem;color:{theme["accent"]};white-space:nowrap;">{html.escape(stat)}</div></div>')
         if not reveal:  # just the stat's name and what it measures: names only appear once a card is opened
             head = ('<div style="display:flex;justify-content:space-between;align-items:center;">'
                     f'<div style="font-weight:700;font-size:1.15rem;">{html.escape(title)}</div>{arrow}</div>'
                     f'<div style="opacity:0.65;font-size:0.85rem;">{html.escape(stat_meta(title)["desc"])}</div>')
-        box = "border-top:1px solid rgba(128,128,128,0.25);padding:12px 4px;"
+        box = "border-top:1px solid var(--app-border);padding:12px 4px;"
         if not extra:
             out.append(f'<div style="{box}">{head}</div>')
             continue
@@ -380,7 +390,7 @@ def awards_html(cards, everyone=False, reveal=True):
             f'{"opacity:0.55;" if r[2] is None else ""}">'
             f'<div style="font-size:1.05rem;"><span style="display:inline-block;min-width:2.8em;opacity:0.6;">'
             f'{ordinal(r[2]) if r[2] else "-"}</span>{html.escape(r[0])}</div>'
-            f'<div style="font-size:1rem;color:#2a9d8f;white-space:nowrap;">{html.escape(r[1])}</div></div>'
+            f'<div style="font-size:1rem;color:{theme["accent"]};white-space:nowrap;">{html.escape(r[1])}</div></div>'
             for r in extra)
         out.append(f'<details class="aw" style="{box}"><summary>{head}</summary>{more}</details>')
     st.markdown("".join(out), unsafe_allow_html=True)
@@ -408,7 +418,7 @@ html,body{margin:0;padding:0;overflow:hidden;background:transparent;color:var(--
 .rank{width:22px;text-align:right;margin-right:8px;font-weight:700;opacity:.65;flex:none}
 .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
 .val{font-weight:700;font-variant-numeric:tabular-nums;flex:none}
-.track{height:10px;margin:5px 0 0 30px;border-radius:5px;background:rgba(128,128,128,.16)}
+.track{height:10px;margin:5px 0 0 30px;border-radius:5px;background:var(--track,rgba(128,128,128,.16))}
 .bar{height:100%;border-radius:5px;transition:width var(--dur) ease}
 #cap{min-height:1.4em;margin:10px 0 8px;opacity:.8;font-size:.9rem;text-align:center}
 .ctl{display:flex;align-items:center;gap:8px}
@@ -423,6 +433,10 @@ input[type=range]{width:100%;margin:12px 0 0;accent-color:var(--accent)}
 <input id="slider" type="range" min="0" value="0">
 <script>
 const D = __DATA__;
+document.documentElement.style.setProperty("--fg", D.fg);
+document.documentElement.style.setProperty("--line", D.line);
+document.documentElement.style.setProperty("--accent", D.accent);
+document.documentElement.style.setProperty("--track", D.surface2);
 const ROW = __ROW__, N = D.frames.length - 1;
 const root = document.documentElement, board = document.getElementById('board'), cap = document.getElementById('cap');
 const slider = document.getElementById('slider'), playBtn = document.getElementById('play');
@@ -516,6 +530,7 @@ def race_html(matches):
     data = {"frames": frames, "order": order, "topN": top_n,
             "info": [[m["date"], m["p1"], m["p2"], m["score"][0], m["score"][1]] for m in matches],
             "colors": {p: player_color(p) for p in order},
+            "fg": theme["text"], "line": theme["border"], "accent": theme["accent"], "surface2": theme["surface2"],
             "lo": int((min(allr) - 30) // 50 * 50), "hi": int(-(-(max(allr) + 30) // 50) * 50)}
     doc = RACE_TEMPLATE.replace("__DATA__", json.dumps(data).replace("</", "<\\/")).replace("__ROW__", str(RACE_ROW_H))
     return doc, top_n * RACE_ROW_H + 105
@@ -591,8 +606,8 @@ def card_stats(name):
 
 
 def card_tier(ovr):
-    return ("Elite", "#3fb8af") if ovr >= 85 else ("Gold", "#e6c200") if ovr >= 74 else \
-           ("Silver", "#c0c0c0") if ovr >= 62 else ("Bronze", "#cd7f32")
+    return ("Elite", semantic_color("positive")) if ovr >= 85 else ("Gold", semantic_color("gold")) if ovr >= 74 else \
+           ("Silver", semantic_color("silver")) if ovr >= 62 else ("Bronze", semantic_color("bronze"))
 
 
 def card_html(name, c):
@@ -609,9 +624,9 @@ def card_html(name, c):
             f'<div style="text-align:right;"><div style="font-size:1.5rem;font-weight:800;line-height:1.1;">{html.escape(name)}</div>'
             f'<div style="font-size:0.85rem;font-weight:700;">{tier} Card</div>'
             f'<div style="font-size:0.85rem;">Rating {c["rating"]:.0f}  |  Rank {c["rank"]}</div></div></div>'
-            '<div style="border-top:1px solid rgba(0,0,0,0.25);margin:12px 0;"></div>'
+            '<div style="border-top:1px solid var(--app-border);margin:12px 0;"></div>'
             f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;font-size:1.05rem;">{cells}</div>'
-            '<div style="border-top:1px solid rgba(0,0,0,0.25);margin:12px 0;"></div>'
+            '<div style="border-top:1px solid var(--app-border);margin:12px 0;"></div>'
             '<div style="display:flex;justify-content:space-between;font-weight:600;">'
             f'<span>Record {c["wins"]}-{c["games"] - c["wins"]}</span><span>Games {c["games"]}</span></div></div>')
 
@@ -702,7 +717,7 @@ def view_bars(cards):
                    f'<div style="display:flex;align-items:baseline;min-width:0;"><span style="width:22px;text-align:right;margin-right:8px;'
                    f'font-weight:700;opacity:0.65;flex:none;">{pl if pl else "-"}</span>'
                    f'<span style="font-weight:600;">{html.escape(p)}</span></div>'
-                   f'<div style="font-weight:700;color:#2a9d8f;flex:none;">{html.escape(text)}</div></div>{bar}</div>')
+                   f'<div style="font-weight:700;color:{theme["accent"]};flex:none;">{html.escape(text)}</div></div>{bar}</div>')
     st.markdown("".join(out), unsafe_allow_html=True)
 
 
@@ -777,7 +792,7 @@ def view_heatmap(cards):
             for p in frame.index:
                 g = good.get(k, {}).get(p)
                 if g is not None:
-                    css.loc[p, k] = f"background-color: rgba(42,157,143,{0.10 + 0.75 * g:.2f});" + ("color: #ffffff;" if g > 0.6 else "")
+                    css.loc[p, k] = f"background-color: color-mix(in srgb, {semantic_color('positive')} {10 + 75 * g:.0f}%, {theme['surface']});" + (f"color: var(--app-fg);" if g > 0.6 else "")
         return css
     cfg = {stat_meta(t)["short"]: st.column_config.NumberColumn(stat_meta(t)["short"], help=t, format=stat_meta(t)["fmt"])
            for t, _, _ in cards}
@@ -799,9 +814,9 @@ def view_medals(cards):
                         "Points": 3 * tally[p][0] + 2 * tally[p][1] + tally[p][2]} for i, p in enumerate(order)])
 
     def tint(col, colour):
-        return [f"background-color: {colour}; color: #000000;" if v > 0 else "" for v in col]
-    styled = (df.style.apply(tint, colour="#FFD700", subset=["Gold"]).apply(tint, colour="#C0C0C0", subset=["Silver"])
-              .apply(tint, colour="#CD7F32", subset=["Bronze"]))
+        return [f"background-color: {colour}; color: var(--app-fg);" if v > 0 else "" for v in col]
+    styled = (df.style.apply(tint, colour=semantic_color("gold"), subset=["Gold"]).apply(tint, colour=semantic_color("silver"), subset=["Silver"])
+              .apply(tint, colour=semantic_color("bronze"), subset=["Bronze"]))
     st.dataframe(styled, hide_index=True, height=35 * (len(df) + 1) + 3,
                  column_config={"#": st.column_config.NumberColumn("#", width="small"), "Player": st.column_config.TextColumn("Player", width="medium")})
     st.caption("Gold, silver and bronze count the stats a player is 1st, 2nd or 3rd in. Points: gold 3, silver 2, bronze 1. Ties share a medal.")
@@ -935,14 +950,14 @@ def button_grid(grid_key, cells, cols=4):
 def compare_table(a, b, rows):
     """Side-by-side comparison: names on top, stat label in the middle, each player's number on their side.
     rows = [(label, (shown_a, number_a), (shown_b, number_b)), ...]. The higher number is highlighted."""
-    line = ("border-top:1px solid rgba(128,128,128,0.25);padding:8px 4px;line-height:1.2;"
+    line = ("border-top:1px solid var(--app-border);padding:8px 4px;line-height:1.2;"
             "display:flex;align-items:center;justify-content:center;")
     name_css = "font-weight:700;font-size:1.15rem;padding-bottom:8px;"
     out = ['<div style="display:grid;grid-template-columns:1fr auto 1fr;text-align:center;padding-bottom:18px;">',
            f'<div style="{name_css}">{html.escape(a)}</div><div></div>',
            f'<div style="{name_css}">{html.escape(b)}</div>']
     for label, (sa, na), (sb, nb) in rows:
-        win = "font-weight:700;color:#2a9d8f;"
+        win = f"font-weight:700;color:{theme['accent']};"
         out.append(f'<div style="{line}font-size:1.5rem;{win if na > nb else ""}">{sa}</div>'
                    f'<div style="{line}font-size:0.85rem;opacity:0.7;padding:8px 14px;">{html.escape(label)}</div>'
                    f'<div style="{line}font-size:1.5rem;{win if nb > na else ""}">{sb}</div>')
@@ -1005,6 +1020,7 @@ data, sha = load()
 players, matches = data["players"], data["matches"]
 pending = data.setdefault("pending", [])  # results waiting for approval: they change nothing until approved
 authed = st.session_state.get("auth", False)
+theme = THEMES.get(st.session_state.get("app_theme", "Oak & Oxblood"), THEMES["Oak & Oxblood"])
 
 with st.expander("Logged In" if authed else "Login (Needed To Edit)"):
     if authed:
@@ -1026,7 +1042,8 @@ if "flash_err" in st.session_state:
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
 if authed and pending:
-    st.markdown('<div style="border-left:4px solid #d6a300;background:rgba(214,163,0,0.12);border-radius:4px;'
+    pending_highlight = semantic_color("highlight")
+    st.markdown(f'<div style="border-left:4px solid {pending_highlight};background:color-mix(in srgb,{pending_highlight} 14%,{theme["surface"]});border-radius:4px;'
                 f'padding:8px 12px;margin:4px 0 10px 0;"><b>{len(pending)} result{"" if len(pending) == 1 else "s"} '
                 f'waiting for approval.</b> Review {"it" if len(pending) == 1 else "them"} in Match History.</div>',
                 unsafe_allow_html=True)
@@ -1063,7 +1080,7 @@ with st.sidebar:
             "Colour theme", list(THEMES), key="app_theme",
             index=list(THEMES).index(st.session_state.get("app_theme", "Oak & Oxblood"))
             if st.session_state.get("app_theme", "Oak & Oxblood") in THEMES else 0,
-            help="Changes the app colours only; player graph colours stay the same."
+            help="Applies a coordinated palette to the whole app, including charts and highlights."
         )
 
     st.checkbox("Use Adjusted Ratings", key="adjusted",
@@ -1096,13 +1113,27 @@ st.markdown(f"""
  --app-bg:{theme["bg"]}; --app-surface:{theme["surface"]}; --app-surface2:{theme["surface2"]};
  --app-fg:{theme["text"]}; --app-muted:{theme["muted"]}; --app-accent:{theme["accent"]};
  --app-accent-text:{theme["accent_text"]}; --app-border:{theme["border"]};
+ --app-positive:{semantic_color("positive")}; --app-negative:{semantic_color("negative")}; --app-highlight:{semantic_color("highlight")};
+ --app-gold:{semantic_color("gold")}; --app-silver:{semantic_color("silver")}; --app-bronze:{semantic_color("bronze")};
 }}
 .stApp {{background:var(--app-bg);color:var(--app-fg)}}
 [data-testid="stHeader"] {{background:color-mix(in srgb,var(--app-bg) 92%,transparent)}}
 [data-testid="stSidebar"] {{background:var(--app-surface);border-right:1px solid var(--app-border)}}
-.stApp [data-testid="stMarkdownContainer"],.stApp label,.stApp p,.stApp h1,.stApp h2,.stApp h3 {{color:var(--app-fg)}}
+.stApp [data-testid="stMarkdownContainer"],.stApp label,.stApp p,.stApp h1,.stApp h2,.stApp h3,.stApp [data-testid="stMetricValue"],.stApp [data-testid="stMetricLabel"] {{color:var(--app-fg)}}
+.stApp [data-testid="stMarkdownContainer"] table {{color:var(--app-fg)}}
+.stApp [data-testid="stMarkdownContainer"] a {{color:var(--app-accent)}}
+.stApp [data-testid="stDataFrame"] iframe {{color-scheme:light dark}}
 .stApp [data-testid="stCaptionContainer"] {{color:var(--app-muted)}}
 .stApp [data-testid="stVerticalBlockBorderWrapper"],.stApp [data-testid="stExpander"] {{border-color:var(--app-border)}}
+.stApp [data-testid="stDataFrame"],.stApp [data-testid="stTable"] {{background:var(--app-surface);color:var(--app-fg)}}
+.stApp [data-testid="stMetric"] {{background:var(--app-surface2);border:1px solid var(--app-border);border-radius:10px;padding:10px}}
+.stApp [data-testid="stAlert"] {{background:var(--app-surface2);color:var(--app-fg);border-color:var(--app-accent)}}
+.stApp button:not([kind="primary"]):not([data-testid="baseButton-primary"]) {{color:var(--app-fg);border-color:var(--app-border)}}
+.stApp [data-baseweb="select"] *, .stApp [data-baseweb="popover"] *, .stApp [role="listbox"] * {{color:var(--app-fg)}}
+.stApp hr {{border-color:var(--app-border)}}
+.stApp [data-testid="stProgress"] > div > div {{background:var(--app-accent)}}
+.stApp input[type="checkbox"],.stApp input[type="radio"] {{accent-color:var(--app-accent)}}
+.vega-embed, .vega-embed canvas, .vega-embed svg {{background:transparent!important}}
 .stApp [data-testid="stDataFrame"],.stApp [data-testid="stTable"] {{border:1px solid var(--app-border);border-radius:10px;overflow:hidden}}
 .stApp div[data-baseweb="select"]>div,.stApp input,.stApp textarea {{background:var(--app-surface);color:var(--app-fg);border-color:var(--app-border)}}
 .stApp button[kind="primary"],.stApp button[data-testid="baseButton-primary"] {{background:var(--app-accent);color:var(--app-accent-text);border-color:var(--app-accent)}}
@@ -1156,7 +1187,10 @@ if page == "Leaderboard":
                                  color=alt.Color("Player:N", legend=None,
                                                  scale=alt.Scale(domain=shown, range=[player_color(p) for p in shown])),
                                  tooltip=["Player:N", "Game:Q", alt.Tooltip("Rating:Q", format=".0f")])
-                         .properties(width="container", height=320))
+                         .properties(width="container", height=320)
+                         .configure(background="transparent")
+                         .configure_axis(labelColor=theme["muted"], titleColor=theme["text"], gridColor=theme["border"], domainColor=theme["border"], tickColor=theme["border"])
+                         .configure_view(stroke=theme["border"]))
                 st.altair_chart(chart)
             else:
                 st.info("Every line is hidden. Tap a name below to bring it back.")
@@ -1172,8 +1206,8 @@ if page == "Leaderboard":
                         ".st-key-chartkey{display:flex !important;flex-direction:row !important;flex-wrap:wrap !important;gap:6px 8px !important;margin-top:8px;}"
                         ".st-key-chartkey > div{width:auto !important;flex:0 0 auto !important;}"
                         ".st-key-chartkey button{min-height:2rem;padding:2px 12px 2px 10px;border-radius:999px;background:transparent;"
-                        "border:1px solid rgba(128,128,128,0.35);display:inline-flex;align-items:center;}"
-                        ".st-key-chartkey button p{white-space:nowrap;font-size:0.9rem;}"
+                        "border:1px solid var(--app-border);color:var(--app-fg);display:inline-flex;align-items:center;}"
+                        ".st-key-chartkey button p{white-space:nowrap;font-size:0.9rem;color:" + theme["text"] + ";}"
                         ".st-key-chartkey button::before{content:\"\";width:11px;height:11px;border-radius:50%;background:var(--dot,#888);margin-right:7px;flex:none;}"
                         + rules + "</style>", unsafe_allow_html=True)
     rating_chart()
@@ -1352,7 +1386,7 @@ elif page == "Player History":
             badges = "".join(
                 '<span style="display:inline-block;width:2rem;height:2rem;line-height:2rem;text-align:center;'
                 'border-radius:6px;font-weight:700;color:#fff;'
-                f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
+                f'background:{semantic_color("positive") if h["Result"] == "Win" else semantic_color("negative")};">{h["Result"][0]}</span>'
                 for h in hist[-5:])
             st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:20px;">'
                         f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest)</div>'
@@ -1366,7 +1400,10 @@ elif page == "Player History":
                      .encode(x=alt.X("Match:Q", title="Matches Played", axis=alt.Axis(tickMinStep=1, format="d")),
                              y=alt.Y("Rating:Q", scale=alt.Scale(zero=False), axis=alt.Axis(format="d")),
                              tooltip=["Match:Q", alt.Tooltip("Rating:Q", format=".0f")])
-                     .properties(width="container", height=300))
+                     .properties(width="container", height=300)
+                     .configure(background="transparent")
+                     .configure_axis(labelColor=theme["muted"], titleColor=theme["text"], gridColor=theme["border"], domainColor=theme["border"], tickColor=theme["border"])
+                     .configure_view(stroke=theme["border"]))
             st.altair_chart(chart)
 
             # ----- head to head, right under the graph -----
