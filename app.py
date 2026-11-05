@@ -975,19 +975,30 @@ def admin_tools():
                 else:
                     rename_player(players, matches + pending, who, new)
                     rename_in_tournaments(tournaments, who, new)
+                    injured[:] = [new if p == who else p for p in injured]
                     save(data, sha, f"Rename {who} to {new}")
                     forget_names()
                     st.session_state.side_flash = f"Renamed {who} to {new}. All their matches were updated."
                     st.rerun()
+        hurt = who in injured
+        if st.button("Back From Injury" if hurt else "Mark As Injured", key="inj_toggle"):
+            if hurt:
+                injured.remove(who)
+            else:
+                injured.append(who)
+            save(data, sha, f"{who} {'back from injury' if hurt else 'injured'}")
+            st.session_state.side_flash = f"{who} is back." if hurt else f"{who} marked as injured."
+            st.rerun()
         played = sum(who in (m["p1"], m["p2"]) for m in matches + pending)
         in_tour = any(who in tm["players"] for t in tournaments for tm in t["teams"])
         if in_tour and not played:
-            st.caption(f"{who} is in a tournament, so they can't be removed. Delete that tournament first if you really want to remove them.")
+            st.caption(f"{who} is in a tournament, so can't be removed.")
         elif played:
-            st.caption(f"{who} is in {played} match{'' if played == 1 else 'es'} (counting any waiting for approval), "
-                       "so they can't be removed. Delete or cancel those in Match History first if you really want to remove them.")
+            st.caption(f"{who} is in {played} match{'' if played == 1 else 'es'}, so can't be removed.")
         elif st.checkbox(f"I Want To Remove {who}", key=f"rm_ok_{who}") and st.button("Remove Player"):
             del players[who]
+            if who in injured:
+                injured.remove(who)
             save(data, sha, f"Remove player {who}")
             forget_names()
             st.session_state.side_flash = f"Removed {who}."
@@ -996,6 +1007,10 @@ def admin_tools():
 
 
 # ---------- tournament ----------
+def valid_tourney_game(a, b):
+    """Tournament games stop at 11: at 10-10 the next point wins, so 11-10 is the closest score."""
+    return max(a, b) == 11 and min(a, b) <= 10
+
 def rename_in_tournaments(tours, old, new):
     """Give a player a new name inside every tournament (teams and results)."""
     sw = lambda x: new if x == old else x
@@ -1019,7 +1034,7 @@ def team_labels(captains):
 def draw_teams(captains, pool, rate, balanced):
     """Split six players into three pairs, one pair per captain.
     Random: a plain shuffle. Balanced: tries every split and picks (at random) one of the five that leave the three
-    teams closest in combined adjusted rating, so Redraw still gives a different result."""
+    teams closest in combined adjusted rating, so drawing again still gives a different result."""
     pool = list(pool)
     if not balanced:
         random.shuffle(pool)
@@ -1087,6 +1102,71 @@ def scoreboard_html(order):
             f'| Points against {tm["a"]} | Difference {tm["f"] - tm["a"]:+d}</div></div>')
     return "".join(out)
 
+def tug_html(t):
+    """One tug-of-war bar per pairing of teams: the points each side has won, and the bar splits by share of points."""
+    owner = {p: i for i, tm in enumerate(t["teams"]) for p in tm["players"]}
+    pts = {}
+    for r in t["results"]:
+        pair = pts.setdefault((owner[r["p1"]], owner[r["p2"]]), [0, 0])
+        if r["score"] is not None:
+            pair[0] += r["score"][0]
+            pair[1] += r["score"][1]
+    out = []
+    for (i, j), (fa, fb) in pts.items():
+        A, B = t["teams"][i], t["teams"][j]
+        share = 50 if fa + fb == 0 else 100 * fa / (fa + fb)
+        lead = lambda x, y: "font-weight:700;color:#2a9d8f;" if x > y else ""
+        out.append(
+            '<div style="margin:14px 0 20px;">'
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">'
+            f'<div><span style="font-weight:700;">{html.escape(A["name"])}</span> '
+            f'<span style="font-size:1.4rem;{lead(fa, fb)}">{fa}</span></div>'
+            f'<div style="text-align:right;"><span style="font-size:1.4rem;{lead(fb, fa)}">{fb}</span> '
+            f'<span style="font-weight:700;">{html.escape(B["name"])}</span></div></div>'
+            '<div style="display:flex;height:12px;margin-top:6px;border-radius:6px;overflow:hidden;">'
+            f'<div style="width:{share:.1f}%;background:{player_color(A["captain"])};"></div>'
+            f'<div style="flex:1;background:{player_color(B["captain"])};"></div></div></div>')
+    return "".join(out)
+
+def crosstable_html(t):
+    """Everyone against everyone in one grid. Read along a row: that player's score against each opponent.
+    Green = they won the game, red = they lost it, and the stronger the colour the bigger the margin."""
+    names = [p for tm in t["teams"] for p in tm["players"]]
+    codes = short_codes(names)
+    team = {p: i for i, tm in enumerate(t["teams"]) for p in tm["players"]}
+    colour = [player_color(tm["captain"]) for tm in t["teams"]]
+    first = {tm["players"][0] for tm in t["teams"]}
+    look = {}
+    for r in t["results"]:
+        if r["score"] is not None:
+            a, b = r["score"]
+            look[(r["p1"], r["p2"])], look[(r["p2"], r["p1"])] = (a, b), (b, a)
+    line = "2px solid rgba(128,128,128,0.5)"
+    dot = lambda p: (f'<span style="display:inline-flex;vertical-align:middle;width:22px;height:22px;border-radius:50%;'
+                     f'background:{colour[team[p]]};color:#fff;font-size:9px;font-weight:700;align-items:center;'
+                     f'justify-content:center;">{codes[p]}</span>')
+    left = lambda q: f"border-left:{line};" if q in first and team[q] else ""
+    head = "<tr><td></td>" + "".join(f'<td style="padding:4px 0;text-align:center;{left(q)}">{dot(q)}</td>' for q in names) + "</tr>"
+    body = []
+    for p in names:
+        cells = []
+        for q in names:
+            css = f"padding:7px 3px;text-align:center;white-space:nowrap;font-size:0.78rem;font-variant-numeric:tabular-nums;{left(q)}"
+            if team[p] == team[q]:
+                cells.append(f'<td style="{css}background:rgba(128,128,128,0.12);"></td>')
+            elif (p, q) in look:
+                a, b = look[(p, q)]
+                al = 0.2 + 0.7 * abs(a - b) / 11
+                cells.append(f'<td style="{css}background:rgba({"42,157,143" if a > b else "209,73,91"},{al:.2f});'
+                             f'{"color:#fff;" if al > 0.55 else ""}">{a}-{b}</td>')
+            else:
+                cells.append(f'<td style="{css}opacity:0.4;">·</td>')
+        row_top = f"border-top:{line};" if p in first and team[p] else ""
+        body.append(f'<tr style="{row_top}"><td style="padding:4px 10px 4px 6px;white-space:nowrap;'
+                    f'border-left:4px solid {colour[team[p]]};">{dot(p)}<span style="margin-left:6px;vertical-align:middle;">'
+                    f'{html.escape(p)}</span></td>' + "".join(cells) + "</tr>")
+    return f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;">{head}{"".join(body)}</table></div>'
+
 def toggle_pool(name):
     """Tap a player to include them in the tournament, tap again to remove. A seventh pick drops the earliest."""
     sel = st.session_state.get("t_pool", [])
@@ -1095,15 +1175,17 @@ def toggle_pool(name):
 @st.fragment
 def tournament_setup():
     ranking, rate = adjusted_ranking()
+    out = [p for p in ranking if p in injured]
+    ranking = [p for p in ranking if p not in injured]  # injured players can't be captains or play
     if len(ranking) < 9:
-        st.info("A tournament needs at least 9 players (3 captains plus 6 more).")
+        st.info("A tournament needs at least 9 healthy players (3 captains plus 6 more).")
         return
     captains, others = ranking[:3], ranking[3:]
     sel = [p for p in st.session_state.get("t_pool", others[:6]) if p in others]
     st.session_state.t_pool = sel
     st.subheader("Set Up A Tournament")
-    st.caption("Three teams of three. The captains are the top three on the adjusted rankings. "
-               "Tap the six other players taking part, then draw the teams.")
+    if out:
+        st.caption("Out injured: " + ", ".join(out))
     st.markdown("**Captains**")
     st.markdown("\n".join(f"{i}. **{c}** ({rate[c]:.0f})" for i, c in enumerate(captains, 1)))
     st.markdown("**Tap Six Players**")
@@ -1121,8 +1203,6 @@ def tournament_setup():
     draft = st.session_state.get("t_draft")
     if draft and (draft["captains"] != captains or sorted(sum(draft["split"], [])) != sorted(sel)):
         draft = None  # the picks or the captains have changed since the draw
-    st.caption("Random shuffles the six players. Balanced picks teams with similar combined adjusted ratings. "
-               "Draw again as often as you like.")
     if draft:
         labels = team_labels(captains)
         st.markdown("**The Teams**")
@@ -1154,9 +1234,9 @@ def tournament_entry(t):
         st.session_state.t_s1, st.session_state.t_s2 = r["score"] if r["score"] else (None, None)
     s1, s2 = st.session_state.get("t_s1"), st.session_state.get("t_s2")
     st.markdown(f"**{r['p1']} Score**")
-    button_grid("grid_ts1", [(str(n), f"tsc1_{n}", s1 == n, set_score, ("t_s1", n)) for n in range(16)])
+    button_grid("grid_ts1", [(str(n), f"tsc1_{n}", s1 == n, set_score, ("t_s1", n)) for n in range(12)])
     st.markdown(f"**{r['p2']} Score**")
-    button_grid("grid_ts2", [(str(n), f"tsc2_{n}", s2 == n, set_score, ("t_s2", n)) for n in range(16)])
+    button_grid("grid_ts2", [(str(n), f"tsc2_{n}", s2 == n, set_score, ("t_s2", n)) for n in range(12)])
     st.markdown(f"### {r['p1']} {'-' if s1 is None else s1}  :  {'-' if s2 is None else s2} {r['p2']}")
     with st.container(key="grid_tbtns"):
         c1, c2 = st.columns(2)
@@ -1165,8 +1245,8 @@ def tournament_entry(t):
     if save_it:
         if s1 is None or s2 is None:
             st.error("Tap a score for both players.")
-        elif not valid_game(s1, s2):
-            st.error(f"{s1}-{s2} isn't valid. {SCORE_RULES}")
+        elif not valid_tourney_game(s1, s2):
+            st.error(f"{s1}-{s2} isn't valid. Tournament games go to 11, and at 10-10 the next point wins (11-10).")
         else:
             r["score"] = [s1, s2]
             save(data, sha, f"Tournament: {r['p1']} {s1}-{s2} {r['p2']}")
@@ -1180,61 +1260,45 @@ def tournament_entry(t):
         st.session_state.flash = f"Cleared {r['p1']} vs {r['p2']}."
         st.rerun()
 
-def tournament_view(t):
-    per, order = tourney_stats(t)
+def tournament_view(t, order):
     played_n, total_n = sum(r["score"] is not None for r in t["results"]), len(t["results"])
     st.subheader(t["name"])
-    st.progress(played_n / total_n, text=f"{played_n} of {total_n} games played")
-    st.caption("Every player plays all six players on the other teams. Every point counts, not games: "
-               "a narrow loss still earns points for the team.")
-    if played_n:
-        gap = order[0]["f"] - order[1]["f"]
-        st.caption(f"{order[0]['name']} lead by {gap} point{'' if gap == 1 else 's'}." if gap else "The top teams are level on points.")
+    if t["status"] == "active":
+        st.progress(played_n / total_n, text=f"{played_n} of {total_n} games played")
+        if played_n:
+            gap = order[0]["f"] - order[1]["f"]
+            st.caption(f"{order[0]['name']} lead by {gap} point{'' if gap == 1 else 's'}." if gap else "The top teams are level on points.")
     st.markdown(scoreboard_html(order), unsafe_allow_html=True)
-    if played_n == total_n:
-        st.success(f"All games played. {order[0]['name']} win with {order[0]['f']} points." if order[0]["f"] > order[1]["f"]
-                   else "All games played. The top teams are level on points.")
+    if t["status"] == "done" or played_n == total_n:
+        st.success(f"{order[0]['name']} win with {order[0]['f']} points." if order[0]["f"] > order[1]["f"]
+                   else "The top teams finished level on points.")
 
 def tournament_details(t, per):
     teams = {p: tm["name"] for tm in t["teams"] for p in tm["players"]}
     rows = sorted(({"Player": p, "Team": teams[p], "Played": d["g"], "Won": d["w"], "Lost": d["g"] - d["w"],
                     "Pts For": d["f"], "Pts Against": d["a"], "Diff": d["f"] - d["a"]} for p, d in per.items()),
                   key=lambda x: (-x["Pts For"], -x["Diff"], x["Player"]))
+    st.subheader("Team Vs Team")
+    st.markdown(tug_html(t), unsafe_allow_html=True)
+    st.markdown(crosstable_html(t), unsafe_allow_html=True)
     st.subheader("Players")
     st.dataframe(pd.DataFrame(rows), hide_index=True, height=35 * (len(rows) + 1) + 3,
                  column_config={"Diff": st.column_config.NumberColumn("Diff", format="%+d")})
-    st.subheader("Team Vs Team")
-    st.caption("Scores are from the point of view of the player on the left.")
-    owner = {p: i for i, tm in enumerate(t["teams"]) for p in tm["players"]}
-    look, tot = {}, {}
-    for r in t["results"]:
-        i, j = owner[r["p1"]], owner[r["p2"]]
-        tot.setdefault((i, j), [0, 0, 0, 0, 0])
-        if r["score"] is not None:
-            a, b = r["score"]
-            look[(r["p1"], r["p2"])] = r["score"]
-            x = tot[(i, j)]
-            x[0] += a
-            x[1] += b
-            x[2] += a > b
-            x[3] += b > a
-            x[4] += 1
-    for (i, j), (fa, fb, wa, wb, n) in tot.items():
-        A, B = t["teams"][i], t["teams"][j]
-        compare_table(A["name"], B["name"], [("Points", (fa, fa), (fb, fb)), ("Games Won", (wa, wa), (wb, wb)),
-                                              ("Played", (f"{n}/9", 0), (f"{n}/9", 0))])
-        df = pd.DataFrame({b: [f"{look[(a, b)][0]}-{look[(a, b)][1]}" if (a, b) in look else "-" for a in A["players"]]
-                           for b in B["players"]}, index=A["players"])
-        st.dataframe(df, height=35 * 4 + 3)
 
 def tournament_manage(t, order):
     with st.expander("Manage Tournament"):
-        st.caption("Finishing saves the final standings to the past tournaments list and lets you set up the next one.")
-        if st.button("Finish Tournament", key="t_finish"):
-            t["status"] = "done"
-            t["final"] = [{"team": x["name"], "points": x["f"]} for x in order]
-            save(data, sha, f"Finish tournament {t['name']}")
-            st.session_state.flash = f"{t['name']} finished. {order[0]['name']} came first with {order[0]['f']} points."
+        if t["status"] == "active":
+            if st.button("Finish Tournament", key="t_finish"):
+                t["status"] = "done"
+                t["final"] = [{"team": x["name"], "points": x["f"]} for x in order]
+                save(data, sha, f"Finish tournament {t['name']}")
+                st.session_state.flash = f"{t['name']} finished. {order[0]['name']} came first with {order[0]['f']} points."
+                st.rerun()
+        elif not any(x["status"] == "active" for x in tournaments) and st.button("Reopen Tournament", key="t_reopen"):
+            t["status"] = "active"
+            t.pop("final", None)
+            save(data, sha, f"Reopen tournament {t['name']}")
+            st.session_state.flash = f"{t['name']} is open again."
             st.rerun()
         if st.checkbox("I Want To Delete This Tournament", key=f"t_del_ok_{t['id']}") and st.button("Delete Tournament", key="t_delete"):
             tournaments.remove(t)
@@ -1242,11 +1306,13 @@ def tournament_manage(t, order):
             st.session_state.flash = "Tournament deleted."
             st.rerun()
 
+
 # ---------- page ----------
 st.set_page_config(page_title="Squash Elo", initial_sidebar_state="collapsed")
 st.title("Squash Elo")
 data, sha = load()
 players, matches = data["players"], data["matches"]
+injured = data.setdefault("injured", [])  # players who are out injured: not eligible for tournaments
 tournaments = data.setdefault("tournaments", [])  # monthly team tournaments (kept separate from the Elo ratings)
 pending = data.setdefault("pending", [])  # results waiting for approval: they change nothing until approved
 authed = st.session_state.get("auth", False)
@@ -1339,7 +1405,7 @@ if page == "Leaderboard":
         stats[loser][1] += 1
     rate_label = "Adj. Rating" if adjusted_on else "Rating"
     rank_label = "Obj. Rank" if objective_on else "Rank"
-    rows = [{rank_label: i, "Player": p, rate_label: round(rating_of(p)), "Played": sum(stats[p]),
+    rows = [{rank_label: i, "Player": p + (" (injured)" if p in injured else ""), rate_label: round(rating_of(p)), "Played": sum(stats[p]),
              "W": stats[p][0], "L": stats[p][1],
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
             for i, p in enumerate(ranking_list, 1)]
@@ -1399,12 +1465,6 @@ elif page == "Enter Match":
         def enter_match():
             sel = [p for p in st.session_state.get("m_players", []) if p in players]
             st.session_state.m_players = sel
-            st.caption("Games go to 11, win by 2. At 14-14 the next point wins (15-14). "
-                       f"Winning 11-0 earns a +{SHUTOUT_BONUS} rating bonus.")
-            if not authed:
-                st.caption("Results entered here are sent for approval. They count once someone who is logged in approves them.")
-            if pending:
-                st.caption(f"{len(pending)} result{' is' if len(pending) == 1 else 's are'} already waiting for approval (see Match History).")
             st.markdown("**Tap Two Players**")
             button_grid("grid_players", [(n, f"pick_{n}", n in sel, toggle_player, (n,)) for n in sorted(players)])
             st.caption(f"Player 1: {sel[0] if sel else '-'}   |   Player 2: {sel[1] if len(sel) > 1 else '-'}")
@@ -1457,7 +1517,6 @@ elif page == "Match History":
     if pending:
         st.subheader(f"Waiting For Approval ({len(pending)})")
         if not authed:
-            st.caption("These results count once someone who is logged in approves them.")
             st.dataframe(pd.DataFrame([{"Result": f'{m["p1"]} {m["score"][0]}-{m["score"][1]} {m["p2"]}',
                                         "Submitted": m["date"][5:]} for m in pending]),
                          hide_index=True, height=35 * (len(pending) + 1) + 3)
@@ -1504,7 +1563,6 @@ elif page == "Match History":
             @st.fragment
             def edit_match():
                 st.subheader("Edit Or Delete A Match")
-                st.caption("Ratings for every later match are recalculated automatically.")
                 order = list(range(len(matches) - 1, -1, -1))  # newest first
                 i = pick(
                     st, "Match", order, key="edit_idx",
@@ -1567,7 +1625,7 @@ elif page == "Player History":
                 f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
                 for h in hist[-5:])
             st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:20px;">'
-                        f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest)</div>'
+                        f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest){" | Injured" if name in injured else ""}</div>'
                         f'<div style="font-size:2.25rem;line-height:1.2;">{round(ratings[-1])} '
                         f'<span style="font-size:1.3rem;opacity:0.6;">({round(max(ratings))})</span></div></div>'
                         f'<div style="display:flex;gap:6px;padding-bottom:6px;">{badges}</div></div>', unsafe_allow_html=True)
@@ -1624,24 +1682,28 @@ elif page == "Player History":
 # ----- tournament -----
 elif page == "Tournament":
     active = next((t for t in reversed(tournaments) if t["status"] == "active"), None)
-    if active:
-        per, order = tourney_stats(active)
-        tournament_view(active)
+    choices = ([active] if active else []) + [t for t in reversed(tournaments) if t["status"] == "done"]
+    if not active:
         if authed:
-            tournament_entry(active)
-        tournament_details(active, per)
+            tournament_setup()
+        else:
+            st.info("No tournament is running right now.")
+        if choices:
+            st.subheader("Past Tournaments")
+    if choices:
+        shown = choices[0]
+        if len(choices) > 1 or not active:  # no key: the dropdown starts again on the first one when the list changes
+            k = pick(st, "Tournament", list(range(len(choices))), label_visibility="collapsed",
+                     format_func=lambda i: choices[i]["name"] + (" (in progress)" if choices[i]["status"] == "active"
+                                                                 else f"  |  {choices[i]['date']}"))
+            shown = choices[k]
+        per, order = tourney_stats(shown)
+        tournament_view(shown, order)
+        if authed and shown["status"] == "active":
+            tournament_entry(shown)
+        tournament_details(shown, per)
         if authed:
-            tournament_manage(active, order)
-    elif authed:
-        tournament_setup()
-    else:
-        st.info("No tournament is running right now.")
-    past = [t for t in reversed(tournaments) if t["status"] == "done"]
-    if past:
-        st.subheader("Past Tournaments")
-        st.dataframe(pd.DataFrame([{"Tournament": t["name"], "Date": t["date"], "Winner": t["final"][0]["team"],
-                                    "Final Points": " | ".join(f'{x["team"]} {x["points"]}' for x in t["final"])}
-                                   for t in past]), hide_index=True)
+            tournament_manage(shown, order)
 
 # ----- awards -----
 elif page in ("Awards", "Stats"):
