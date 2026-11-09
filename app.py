@@ -151,42 +151,6 @@ def adjusted_frames(games):
     return frames
 
 
-@st.cache_data(show_spinner=False)
-def objective_order(games):
-    """READ-ONLY: everyone who has played, best first, ranked purely by WHO BEAT WHOM. No ratings and no scores.
-    It looks for the order that contradicts the fewest results: every game where someone beat a player ranked above
-    them counts as one upset, and this order has as few upsets as it can find. If several orders are equally good,
-    the one closest to the adjusted ratings wins (that is where the search starts from)."""
-    frames = adjusted_frames(games)
-    if not frames[-1]:
-        return []
-    names = sorted(frames[-1], key=lambda p: -frames[-1][p])
-    idx = {p: i for i, p in enumerate(names)}
-    n = len(names)
-    wins = np.zeros((n, n))  # wins[a][b] = how many times a beat b
-    for g in games:
-        wins[idx[g[0]], idx[g[1]]] += 1
-
-    def upsets(order):
-        return float(np.tril(wins[np.ix_(order, order)], -1).sum())  # games won by someone ranked below the loser
-    order = list(range(n))
-    best = upsets(order)
-    for _ in range(60):  # move one player at a time to wherever it removes the most upsets, until nothing improves
-        improved = False
-        for i in range(n):
-            p, rest = order[i], order[:i] + order[i + 1:]
-            best_j, best_cost = i, best
-            for j in sorted(range(n), key=lambda j: abs(j - i)):
-                cost = upsets(rest[:j] + [p] + rest[j:])
-                if cost < best_cost - 1e-9:
-                    best_j, best_cost = j, cost
-            if best_j != i:
-                order, best, improved = rest[:best_j] + [p] + rest[best_j:], best_cost, True
-        if not improved:
-            break
-    return [names[i] for i in order]
-
-
 def rating_timeline(matches, adj=None):
     """READ-ONLY: each player's rating after their 1st game, 2nd game, 3rd game... (Game 0 = starting rating).
     Everyone's nth game lines up at the same point, so a player with more games just goes further along.
@@ -1027,9 +991,18 @@ def adjusted_ranking():
     rate = {p: final.get(p, players[p]) for p in players}
     return sorted(players, key=lambda p: (-rate[p], p)), rate
 
-def team_labels(captains):
-    firsts = [c.split()[0] for c in captains]
-    return [f"Team {f if firsts.count(f) == 1 else c}" for f, c in zip(firsts, captains)]
+TEAM_FILL = ["#2563eb", "#dc2626", "#f3f4f6"]  # blue, red, white (team 1 is captained by the top-ranked player, and so on)
+TEAM_EDGE = ["#2563eb", "#dc2626", "#b8bec8"]
+TEAM_INK = ["#ffffff", "#ffffff", "#374151"]
+TEAM_COLOUR_NAMES = ["Blue", "Red", "White"]
+TEAM_NOUNS = ["Lobsters", "Tin Bashers", "Drop Shots", "Boasters", "Rail Riders", "Wall Huggers", "Let Merchants",
+              "Nick Pickers", "Ghosters", "Dive Bombers", "Corner Crawlers", "Sudden Deaths", "Back Wall Bandits",
+              "Volley Llamas", "T-Zone Titans", "Bounce Badgers", "Rubber Ducks", "Squash Goblins", "Kill Shot Kings",
+              "Sweaty Rackets", "Cross Court Crocs", "Tin Tigers", "Lunge Lizards", "Floor Sliders"]
+
+def new_team_names():
+    """A colour plus a squash pun, e.g. Blue Lobsters, Red Tin Bashers, White Drop Shots."""
+    return [f"{c} {n}" for c, n in zip(TEAM_COLOUR_NAMES, random.sample(TEAM_NOUNS, 3))]
 
 def draw_teams(captains, pool, rate, balanced):
     """Split six players into three pairs, one pair per captain.
@@ -1074,9 +1047,9 @@ def tourney_stats(t):
             d["f"] += got
             d["a"] += gave
     teams = []
-    for tm in t["teams"]:
+    for i, tm in enumerate(t["teams"]):
         ds = [per[p] for p in tm["players"]]
-        teams.append({"name": tm["name"], "captain": tm["captain"], "players": tm["players"],
+        teams.append({"idx": i, "name": tm["name"], "captain": tm["captain"], "players": tm["players"],
                       **{k: sum(d[k] for d in ds) for k in ("g", "w", "f", "a")}})
     return per, sorted(teams, key=lambda x: (-x["f"], -(x["f"] - x["a"])))
 
@@ -1096,7 +1069,7 @@ def scoreboard_html(order):
             '<span style="font-size:0.9rem;opacity:0.7;">pts</span></div></div>'
             '<div style="height:10px;margin:6px 0 0 30px;border-radius:5px;background:rgba(128,128,128,0.16);">'
             f'<div style="height:100%;width:{max(3, 100 * tm["f"] / top):.1f}%;border-radius:5px;'
-            f'background:{player_color(tm["captain"])};"></div></div>'
+            f'background:{TEAM_FILL[tm["idx"]]};box-shadow:inset 0 0 0 1px rgba(128,128,128,0.45);"></div></div>'
             f'<div style="margin:8px 0 0 30px;font-size:0.9rem;opacity:0.75;">{roster}</div>'
             f'<div style="margin:2px 0 0 30px;font-size:0.9rem;opacity:0.75;">Games won {tm["w"]} of {tm["g"]} '
             f'| Points against {tm["a"]} | Difference {tm["f"] - tm["a"]:+d}</div></div>')
@@ -1123,9 +1096,9 @@ def tug_html(t):
             f'<span style="font-size:1.4rem;{lead(fa, fb)}">{fa}</span></div>'
             f'<div style="text-align:right;"><span style="font-size:1.4rem;{lead(fb, fa)}">{fb}</span> '
             f'<span style="font-weight:700;">{html.escape(B["name"])}</span></div></div>'
-            '<div style="display:flex;height:12px;margin-top:6px;border-radius:6px;overflow:hidden;">'
-            f'<div style="width:{share:.1f}%;background:{player_color(A["captain"])};"></div>'
-            f'<div style="flex:1;background:{player_color(B["captain"])};"></div></div></div>')
+            '<div style="display:flex;height:12px;margin-top:6px;border-radius:6px;overflow:hidden;box-shadow:0 0 0 1px rgba(128,128,128,0.45);">'
+            f'<div style="width:{share:.1f}%;background:{TEAM_FILL[i]};"></div>'
+            f'<div style="flex:1;background:{TEAM_FILL[j]};"></div></div></div>')
     return "".join(out)
 
 def crosstable_html(t):
@@ -1134,7 +1107,6 @@ def crosstable_html(t):
     names = [p for tm in t["teams"] for p in tm["players"]]
     codes = short_codes(names)
     team = {p: i for i, tm in enumerate(t["teams"]) for p in tm["players"]}
-    colour = [player_color(tm["captain"]) for tm in t["teams"]]
     first = {tm["players"][0] for tm in t["teams"]}
     look = {}
     for r in t["results"]:
@@ -1143,8 +1115,8 @@ def crosstable_html(t):
             look[(r["p1"], r["p2"])], look[(r["p2"], r["p1"])] = (a, b), (b, a)
     line = "2px solid rgba(128,128,128,0.5)"
     dot = lambda p: (f'<span style="display:inline-flex;vertical-align:middle;width:22px;height:22px;border-radius:50%;'
-                     f'background:{colour[team[p]]};color:#fff;font-size:9px;font-weight:700;align-items:center;'
-                     f'justify-content:center;">{codes[p]}</span>')
+                     f'background:{TEAM_FILL[team[p]]};color:{TEAM_INK[team[p]]};box-shadow:inset 0 0 0 1px rgba(128,128,128,0.45);'
+                     f'font-size:9px;font-weight:700;align-items:center;justify-content:center;">{codes[p]}</span>')
     left = lambda q: f"border-left:{line};" if q in first and team[q] else ""
     head = "<tr><td></td>" + "".join(f'<td style="padding:4px 0;text-align:center;{left(q)}">{dot(q)}</td>' for q in names) + "</tr>"
     body = []
@@ -1163,7 +1135,7 @@ def crosstable_html(t):
                 cells.append(f'<td style="{css}opacity:0.4;">·</td>')
         row_top = f"border-top:{line};" if p in first and team[p] else ""
         body.append(f'<tr style="{row_top}"><td style="padding:4px 10px 4px 6px;white-space:nowrap;'
-                    f'border-left:4px solid {colour[team[p]]};">{dot(p)}<span style="margin-left:6px;vertical-align:middle;">'
+                    f'border-left:4px solid {TEAM_EDGE[team[p]]};">{dot(p)}<span style="margin-left:6px;vertical-align:middle;">'
                     f'{html.escape(p)}</span></td>' + "".join(cells) + "</tr>")
     return f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;">{head}{"".join(body)}</table></div>'
 
@@ -1199,15 +1171,19 @@ def tournament_setup():
         if len(sel) != 6:
             st.error("Pick exactly six players first.")
         else:
-            st.session_state.t_draft = {"captains": captains, "split": draw_teams(captains, sel, rate, balanced=bool(bal))}
+            st.session_state.t_draft = {"captains": captains, "split": draw_teams(captains, sel, rate, balanced=bool(bal)),
+                                        "names": new_team_names()}
     draft = st.session_state.get("t_draft")
     if draft and (draft["captains"] != captains or sorted(sum(draft["split"], [])) != sorted(sel)):
         draft = None  # the picks or the captains have changed since the draw
     if draft:
-        labels = team_labels(captains)
+        labels = draft["names"]
         st.markdown("**The Teams**")
         for nm, c, sp in zip(labels, captains, draft["split"]):
             st.markdown(f"**{nm}**  \n{c} (C), {sp[0]}, {sp[1]}  \nCombined rating {rate[c] + rate[sp[0]] + rate[sp[1]]:.0f}")
+        if st.button("New Team Names", key="t_names"):
+            draft["names"] = new_team_names()
+            st.rerun(scope="fragment")
         name = st.text_input("Tournament Name", value=f"Tournament {datetime.now().strftime('%B %Y')}", key="t_name")
         if st.button("Start Tournament", type="primary", key="t_start"):
             teams = [{"name": nm, "captain": c, "players": [c] + sp} for nm, c, sp in zip(labels, captains, draft["split"])]
@@ -1371,10 +1347,7 @@ with st.sidebar:
     st.subheader("Settings")
     st.checkbox("Use Adjusted Ratings", key="adjusted",
                 help="Re-rates everyone from all their games at once, so a win counts for more or less depending on how strong the opponent turned out to be.")
-    st.checkbox("Use Objective Ranking", key="objective",
-                help="Ranks everyone purely by who beat whom: the order that contradicts the fewest results. Ratings and scores are ignored.")
     adjusted_on = bool(st.session_state.get("adjusted", False))
-    objective_on = bool(st.session_state.get("objective", False))
     adj = adjusted_frames(games_key(matches)) if adjusted_on and matches else None
 
     def rating_of(p):
@@ -1382,9 +1355,7 @@ with st.sidebar:
         return adj[-1].get(p, players.get(p, START_RATING)) if adj else players[p]
 
     # Everyone in leaderboard order, best first. Every player dropdown uses this order too.
-    played_order = objective_order(games_key(matches)) if objective_on and matches else []
-    ranking_list = (played_order + sorted(p for p in players if p not in set(played_order))) if played_order \
-        else sorted(players, key=lambda x: -rating_of(x))
+    ranking_list = sorted(players, key=lambda x: -rating_of(x))
     if authed:
         st.divider()
         admin_tools()
@@ -1404,8 +1375,7 @@ if page == "Leaderboard":
         stats[m["winner"]][0] += 1
         stats[loser][1] += 1
     rate_label = "Adj. Rating" if adjusted_on else "Rating"
-    rank_label = "Obj. Rank" if objective_on else "Rank"
-    rows = [{rank_label: i, "Player": p + (" (injured)" if p in injured else ""), rate_label: round(rating_of(p)), "Played": sum(stats[p]),
+    rows = [{"Rank": i, "Player": p + (" ✚" if p in injured else ""), rate_label: round(rating_of(p)), "Played": sum(stats[p]),
              "W": stats[p][0], "L": stats[p][1],
              "Win %": round(100 * stats[p][0] / sum(stats[p])) if sum(stats[p]) else None}
             for i, p in enumerate(ranking_list, 1)]
@@ -1625,7 +1595,7 @@ elif page == "Player History":
                 f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
                 for h in hist[-5:])
             st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:20px;">'
-                        f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest){" | Injured" if name in injured else ""}</div>'
+                        f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest)<span style="color:#d1495b;font-size:0.7rem;margin-left:6px;">{"✚" if name in injured else ""}</span></div>'
                         f'<div style="font-size:2.25rem;line-height:1.2;">{round(ratings[-1])} '
                         f'<span style="font-size:1.3rem;opacity:0.6;">({round(max(ratings))})</span></div></div>'
                         f'<div style="display:flex;gap:6px;padding-bottom:6px;">{badges}</div></div>', unsafe_allow_html=True)
