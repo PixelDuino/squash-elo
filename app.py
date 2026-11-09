@@ -3,12 +3,16 @@ Anyone can VIEW. Only people with the password can add players / enter, edit or 
 Data lives in squash_data.json inside a separate private GitHub repo, so it survives restarts.
 """
 import base64
+import functools
 import html
 import itertools
 import json
 import math
 import random
 import uuid
+from io import BytesIO
+
+from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 
 import altair as alt
@@ -970,6 +974,118 @@ def admin_tools():
 
 
 
+# ---------- share cards ----------
+CARD_BG, CARD_TEXT, CARD_MUTED = (15, 23, 42), (241, 245, 249), (148, 163, 184)
+CARD_TRACK, CARD_ACCENT, CARD_LINE = (51, 65, 85), (42, 157, 143), (38, 50, 72)
+CARD_W, CARD_PAD = 1080, 70
+
+@functools.lru_cache(maxsize=None)
+def card_font(size, bold=False):
+    names = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "Arial Bold.ttf"] if bold else \
+            ["DejaVuSans.ttf", "LiberationSans-Regular.ttf", "Arial.ttf"]
+    for name in names:
+        for folder in ("", "/usr/share/fonts/truetype/dejavu/", "/usr/share/fonts/truetype/liberation/", "/Library/Fonts/"):
+            try:
+                return ImageFont.truetype(folder + name, size)
+            except OSError:
+                pass
+    try:
+        return ImageFont.load_default(size)  # Pillow 10.1+ ships a scalable fallback font
+    except TypeError:
+        return ImageFont.load_default()
+
+def fit_text(d, text, font, width):
+    if d.textlength(text, font=font) <= width:
+        return text
+    while text and d.textlength(text + "...", font=font) > width:
+        text = text[:-1]
+    return text + "..."
+
+def card_bytes(img):
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+def card_header(d, title, sub):
+    d.rectangle([0, 0, CARD_W, 14], fill=CARD_ACCENT)
+    size = next((z for z in (66, 58, 50, 44) if d.textlength(title, font=card_font(z, True)) <= CARD_W - 2 * CARD_PAD), 44)
+    d.text((CARD_PAD, 56 + (66 - size) // 2), fit_text(d, title, card_font(size, True), CARD_W - 2 * CARD_PAD),
+           font=card_font(size, True), fill=CARD_TEXT)
+    d.text((CARD_PAD, 142), sub, font=card_font(34), fill=CARD_MUTED)
+
+def card_footer(d, H):
+    d.text((CARD_PAD, H - 76), "Squash Elo", font=card_font(30, True), fill=CARD_MUTED)
+
+def tournament_card(t, order):
+    """A PNG of the tournament standings: team colours, points, bars and rosters."""
+    played_n, total_n = sum(r["score"] is not None for r in t["results"]), len(t["results"])
+    finished = t["status"] == "done" or played_n == total_n
+    H = 280 + (80 if finished else 0) + 260 * len(order) + 110
+    img = Image.new("RGB", (CARD_W, H), CARD_BG)
+    d = ImageDraw.Draw(img)
+    sub = ("Final standings" if finished else f"{played_n} of {total_n} games played") + "  |  " + datetime.now().strftime("%d %b %Y")
+    card_header(d, t["name"], sub)
+    y = 215
+    if finished:
+        msg = f"{order[0]['name']} win with {order[0]['f']} points" if order[0]["f"] > order[1]["f"] else "The top teams finished level"
+        d.text((CARD_PAD, y), fit_text(d, msg, card_font(42, True), CARD_W - 2 * CARD_PAD), font=card_font(42, True), fill=CARD_ACCENT)
+        y += 80
+    y += 30
+    top = max(1, order[0]["f"])
+    inner = CARD_W - 2 * CARD_PAD
+    for i, tm in enumerate(order, 1):
+        d.text((CARD_PAD, y + 4), str(i), font=card_font(60, True), fill=CARD_MUTED)
+        pts, lab = str(tm["f"]), "pts"
+        lw, nw = d.textlength(lab, font=card_font(30)), d.textlength(pts, font=card_font(76, True))
+        d.text((CARD_W - CARD_PAD - lw, y + 46), lab, font=card_font(30), fill=CARD_MUTED)
+        d.text((CARD_W - CARD_PAD - lw - 12 - nw, y - 14), pts, font=card_font(76, True), fill=CARD_ACCENT)
+        d.text((CARD_PAD + 60, y + 6), fit_text(d, tm["name"], card_font(50, True), inner - 60 - nw - lw - 40),
+               font=card_font(50, True), fill=CARD_TEXT)
+        by = y + 100
+        d.rounded_rectangle([CARD_PAD, by, CARD_W - CARD_PAD, by + 22], radius=11, fill=CARD_TRACK)
+        d.rounded_rectangle([CARD_PAD, by, CARD_PAD + max(34, inner * tm["f"] / top), by + 22], radius=11,
+                            fill=tuple(int(TEAM_FILL[tm["idx"]][k:k + 2], 16) for k in (1, 3, 5)),
+                            outline=(184, 190, 200) if tm["idx"] == 2 else None)
+        roster = ", ".join(p + (" (C)" if p == tm["captain"] else "") for p in tm["players"])
+        d.text((CARD_PAD, by + 44), fit_text(d, roster, card_font(32), inner), font=card_font(32), fill=CARD_TEXT)
+        d.text((CARD_PAD, by + 90), f"Games won {tm['w']} of {tm['g']}   |   Against {tm['a']}   |   Diff {tm['f'] - tm['a']:+d}",
+               font=card_font(28), fill=CARD_MUTED)
+        y += 260
+    card_footer(d, H)
+    return card_bytes(img)
+
+def leaderboard_card(rows, sub):
+    """A PNG of the leaderboard. rows: dicts with rank, name, rating, w, l, hurt."""
+    rows = rows[:14]
+    H = 300 + 84 * len(rows) + 110
+    img = Image.new("RGB", (CARD_W, H), CARD_BG)
+    d = ImageDraw.Draw(img)
+    card_header(d, "Squash Leaderboard", sub + "  |  " + datetime.now().strftime("%d %b %Y"))
+    f_h = card_font(26)
+    d.text((CARD_PAD, 215), "#", font=f_h, fill=CARD_MUTED)
+    d.text((CARD_PAD + 90, 215), "PLAYER", font=f_h, fill=CARD_MUTED)
+    for text, right in (("RATING", CARD_W - CARD_PAD - 230), ("W-L", CARD_W - CARD_PAD)):
+        d.text((right - d.textlength(text, font=f_h), 215), text, font=f_h, fill=CARD_MUTED)
+    medal = {1: (212, 175, 55), 2: (192, 192, 200), 3: (205, 127, 50)}
+    y = 262
+    for r in rows:
+        d.line([CARD_PAD, y, CARD_W - CARD_PAD, y], fill=CARD_LINE, width=2)
+        d.text((CARD_PAD, y + 18), str(r["rank"]), font=card_font(40, True), fill=medal.get(r["rank"], CARD_MUTED))
+        name = fit_text(d, r["name"], card_font(40, True), 470)
+        d.text((CARD_PAD + 90, y + 18), name, font=card_font(40, True), fill=CARD_TEXT)
+        if r["hurt"]:  # a small red cross after the name
+            cx, cy = CARD_PAD + 90 + d.textlength(name, font=card_font(40, True)) + 22, y + 42
+            d.rectangle([cx - 3, cy - 10, cx + 3, cy + 10], fill=(209, 73, 91))
+            d.rectangle([cx - 10, cy - 3, cx + 10, cy + 3], fill=(209, 73, 91))
+        rate = str(r["rating"])
+        d.text((CARD_W - CARD_PAD - 230 - d.textlength(rate, font=card_font(40, True)), y + 18), rate, font=card_font(40, True), fill=CARD_ACCENT)
+        rec = f"{r['w']}-{r['l']}"
+        d.text((CARD_W - CARD_PAD - d.textlength(rec, font=card_font(36)), y + 22), rec, font=card_font(36), fill=CARD_MUTED)
+        y += 84
+    card_footer(d, H)
+    return card_bytes(img)
+
+
 # ---------- tournament ----------
 def valid_tourney_game(a, b):
     """Tournament games stop at 11: at 10-10 the next point wins, so 11-10 is the closest score."""
@@ -1382,6 +1498,12 @@ if page == "Leaderboard":
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, height=35 * (len(rows) + 1) + 3,
                      column_config={"Win %": st.column_config.NumberColumn("Win %", format="%.0f%%")})
+        with st.expander("Share Card"):
+            png = leaderboard_card([{"rank": i, "name": p, "rating": round(rating_of(p)), "w": stats[p][0], "l": stats[p][1],
+                                     "hurt": p in injured} for i, p in enumerate(ranking_list, 1)],
+                                   "Adjusted ratings" if adjusted_on else "Ratings")
+            st.image(png)
+            st.download_button("Download Image", png, file_name="squash_leaderboard.png", mime="image/png", key="dl_lb")
     else:
         st.info("No players yet.")
 
@@ -1672,6 +1794,10 @@ elif page == "Tournament":
         if authed and shown["status"] == "active":
             tournament_entry(shown)
         tournament_details(shown, per)
+        with st.expander("Share Card"):
+            png = tournament_card(shown, order)
+            st.image(png)
+            st.download_button("Download Image", png, file_name="squash_tournament.png", mime="image/png", key=f"dl_t_{shown['id']}")
         if authed:
             tournament_manage(shown, order)
 
