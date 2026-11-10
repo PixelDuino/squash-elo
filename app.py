@@ -975,8 +975,10 @@ def admin_tools():
 
 
 # ---------- share cards ----------
-CARD_BG, CARD_TEXT, CARD_MUTED = (15, 23, 42), (241, 245, 249), (148, 163, 184)
-CARD_TRACK, CARD_ACCENT, CARD_LINE = (51, 65, 85), (42, 157, 143), (38, 50, 72)
+# Plain white, the app's own text and grey, and the teal accent. Nothing else except the podium medal lines.
+CARD_BG, CARD_TEXT, CARD_MUTED = (255, 255, 255), (49, 51, 63), (128, 128, 128)
+CARD_LINE, CARD_ACCENT, CARD_BLOCK = (230, 230, 230), (42, 157, 143), (246, 246, 247)
+CARD_MEDAL = [(212, 175, 55), (170, 170, 180), (205, 127, 50)]  # gold, silver, bronze
 CARD_W, CARD_PAD = 1080, 70
 
 @functools.lru_cache(maxsize=None)
@@ -1001,87 +1003,105 @@ def fit_text(d, text, font, width):
         text = text[:-1]
     return text + "..."
 
+def wrap_text(d, text, font, width):
+    lines, cur = [], ""
+    for word in text.split():
+        trial = (cur + " " + word).strip()
+        if cur and d.textlength(trial, font=font) > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = trial
+    return lines + ([cur] if cur else [])
+
 def card_bytes(img):
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 def card_header(d, title, sub):
-    d.rectangle([0, 0, CARD_W, 14], fill=CARD_ACCENT)
-    size = next((z for z in (66, 58, 50, 44) if d.textlength(title, font=card_font(z, True)) <= CARD_W - 2 * CARD_PAD), 44)
-    d.text((CARD_PAD, 56 + (66 - size) // 2), fit_text(d, title, card_font(size, True), CARD_W - 2 * CARD_PAD),
+    size = next((z for z in (64, 56, 48, 42) if d.textlength(title, font=card_font(z, True)) <= CARD_W - 2 * CARD_PAD), 42)
+    d.text((CARD_PAD, 60 + (64 - size) // 2), fit_text(d, title, card_font(size, True), CARD_W - 2 * CARD_PAD),
            font=card_font(size, True), fill=CARD_TEXT)
-    d.text((CARD_PAD, 142), sub, font=card_font(34), fill=CARD_MUTED)
+    d.text((CARD_PAD, 142), sub, font=card_font(32), fill=CARD_MUTED)
+    d.rectangle([CARD_PAD, 196, CARD_PAD + 90, 202], fill=CARD_ACCENT)
 
 def card_footer(d, H):
-    d.text((CARD_PAD, H - 76), "Squash Elo", font=card_font(30, True), fill=CARD_MUTED)
+    d.text((CARD_PAD, H - 70), "Squash Elo", font=card_font(28, True), fill=CARD_MUTED)
 
 def tournament_card(t, order):
-    """A PNG of the tournament standings: team colours, points, bars and rosters."""
+    """A PNG of the tournament: the three teams on a podium (a thin medal-coloured line on top of each step),
+    then every team's players underneath."""
     played_n, total_n = sum(r["score"] is not None for r in t["results"]), len(t["results"])
-    finished = t["status"] == "done" or played_n == total_n
-    H = 280 + (80 if finished else 0) + 260 * len(order) + 110
+    d0 = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    inner = CARD_W - 2 * CARD_PAD
+    rosters = [wrap_text(d0, ", ".join(p + (" (C)" if p == tm["captain"] else "") for p in tm["players"]), card_font(28), inner)
+               for tm in order]
+    podium_top, step_h = 250, {0: 330, 1: 275, 2: 235}
+    base = podium_top + step_h[0]
+    y_list = base + 70
+    H = y_list + sum(80 + 38 * len(r) + 30 for r in rosters) + 90
     img = Image.new("RGB", (CARD_W, H), CARD_BG)
     d = ImageDraw.Draw(img)
-    sub = ("Final standings" if finished else f"{played_n} of {total_n} games played") + "  |  " + datetime.now().strftime("%d %b %Y")
-    card_header(d, t["name"], sub)
-    y = 215
-    if finished:
-        msg = f"{order[0]['name']} win with {order[0]['f']} points" if order[0]["f"] > order[1]["f"] else "The top teams finished level"
-        d.text((CARD_PAD, y), fit_text(d, msg, card_font(42, True), CARD_W - 2 * CARD_PAD), font=card_font(42, True), fill=CARD_ACCENT)
-        y += 80
-    y += 30
-    top = max(1, order[0]["f"])
-    inner = CARD_W - 2 * CARD_PAD
-    for i, tm in enumerate(order, 1):
-        d.text((CARD_PAD, y + 4), str(i), font=card_font(60, True), fill=CARD_MUTED)
-        pts, lab = str(tm["f"]), "pts"
-        lw, nw = d.textlength(lab, font=card_font(30)), d.textlength(pts, font=card_font(76, True))
-        d.text((CARD_W - CARD_PAD - lw, y + 46), lab, font=card_font(30), fill=CARD_MUTED)
-        d.text((CARD_W - CARD_PAD - lw - 12 - nw, y - 14), pts, font=card_font(76, True), fill=CARD_ACCENT)
-        d.text((CARD_PAD + 60, y + 6), fit_text(d, tm["name"], card_font(50, True), inner - 60 - nw - lw - 40),
-               font=card_font(50, True), fill=CARD_TEXT)
-        by = y + 100
-        d.rounded_rectangle([CARD_PAD, by, CARD_W - CARD_PAD, by + 22], radius=11, fill=CARD_TRACK)
-        d.rounded_rectangle([CARD_PAD, by, CARD_PAD + max(34, inner * tm["f"] / top), by + 22], radius=11,
-                            fill=tuple(int(TEAM_FILL[tm["idx"]][k:k + 2], 16) for k in (1, 3, 5)),
-                            outline=(184, 190, 200) if tm["idx"] == 2 else None)
-        roster = ", ".join(p + (" (C)" if p == tm["captain"] else "") for p in tm["players"])
-        d.text((CARD_PAD, by + 44), fit_text(d, roster, card_font(32), inner), font=card_font(32), fill=CARD_TEXT)
-        d.text((CARD_PAD, by + 90), f"Games won {tm['w']} of {tm['g']}   |   Against {tm['a']}   |   Diff {tm['f'] - tm['a']:+d}",
-               font=card_font(28), fill=CARD_MUTED)
-        y += 260
+    sub = ("Final standings" if t["status"] == "done" or played_n == total_n else f"{played_n} of {total_n} games played")
+    card_header(d, t["name"], sub + "  |  " + datetime.now().strftime("%d %b %Y"))
+    bw, gap = 300, 20
+    for pos, rank in ((0, 1), (1, 0), (2, 2)):  # silver on the left, gold in the middle, bronze on the right
+        tm, x, h = order[rank], CARD_PAD + pos * (bw + gap), step_h[rank]
+        top = base - h
+        d.rectangle([x, top, x + bw, base], fill=CARD_BLOCK)
+        d.rectangle([x, top, x + bw, top + 6], fill=CARD_MEDAL[rank])
+        d.text((x + 24, top + 24), str(rank + 1), font=card_font(40, True), fill=CARD_MUTED)
+        lines = wrap_text(d, tm["name"], card_font(32, True), bw - 48)[:2]
+        if len(lines) == 2:
+            lines[1] = fit_text(d, " ".join(wrap_text(d, tm["name"], card_font(32, True), bw - 48)[1:]), card_font(32, True), bw - 48)
+        for k, line in enumerate(lines):
+            d.text((x + 24, top + 76 + 40 * k), line, font=card_font(32, True), fill=CARD_TEXT)
+        pts = str(tm["f"])
+        d.text((x + 24, top + 164), pts, font=card_font(58, True), fill=CARD_TEXT)
+        d.text((x + 24 + d.textlength(pts, font=card_font(58, True)) + 10, top + 192), "pts", font=card_font(28), fill=CARD_MUTED)
+    d.line([CARD_PAD, base, CARD_W - CARD_PAD, base], fill=CARD_LINE, width=2)
+    y = y_list
+    for i, (tm, lines) in enumerate(zip(order, rosters), 1):
+        d.line([CARD_PAD, y - 20, CARD_W - CARD_PAD, y - 20], fill=CARD_LINE, width=2)
+        d.text((CARD_PAD, y), f"{i}   {tm['name']}", font=card_font(34, True), fill=CARD_TEXT)
+        diff = f"Diff {tm['f'] - tm['a']:+d}"
+        d.text((CARD_W - CARD_PAD - d.textlength(diff, font=card_font(28)), y + 6), diff, font=card_font(28), fill=CARD_MUTED)
+        for k, line in enumerate(lines):
+            d.text((CARD_PAD + 44, y + 50 + 38 * k), line, font=card_font(28), fill=CARD_MUTED)
+        y += 80 + 38 * len(lines) + 30
     card_footer(d, H)
     return card_bytes(img)
 
 def leaderboard_card(rows, sub):
-    """A PNG of the leaderboard. rows: dicts with rank, name, rating, w, l, hurt."""
+    """A PNG of the leaderboard, laid out like the table in the app. rows: dicts with rank, name, rating, w, l, hurt."""
     rows = rows[:14]
-    H = 300 + 84 * len(rows) + 110
+    H = 290 + 80 * len(rows) + 110
     img = Image.new("RGB", (CARD_W, H), CARD_BG)
     d = ImageDraw.Draw(img)
     card_header(d, "Squash Leaderboard", sub + "  |  " + datetime.now().strftime("%d %b %Y"))
-    f_h = card_font(26)
-    d.text((CARD_PAD, 215), "#", font=f_h, fill=CARD_MUTED)
-    d.text((CARD_PAD + 90, 215), "PLAYER", font=f_h, fill=CARD_MUTED)
-    for text, right in (("RATING", CARD_W - CARD_PAD - 230), ("W-L", CARD_W - CARD_PAD)):
-        d.text((right - d.textlength(text, font=f_h), 215), text, font=f_h, fill=CARD_MUTED)
-    medal = {1: (212, 175, 55), 2: (192, 192, 200), 3: (205, 127, 50)}
-    y = 262
+    f_h = card_font(24)
+    rate_x, rec_x = CARD_W - CARD_PAD - 190, CARD_W - CARD_PAD
+    d.text((CARD_PAD, 238), "Rank", font=f_h, fill=CARD_MUTED)
+    d.text((CARD_PAD + 130, 238), "Player", font=f_h, fill=CARD_MUTED)
+    d.text((rate_x - d.textlength("Rating", font=f_h), 238), "Rating", font=f_h, fill=CARD_MUTED)
+    d.text((rec_x - d.textlength("W-L", font=f_h), 238), "W-L", font=f_h, fill=CARD_MUTED)
+    y = 282
     for r in rows:
         d.line([CARD_PAD, y, CARD_W - CARD_PAD, y], fill=CARD_LINE, width=2)
-        d.text((CARD_PAD, y + 18), str(r["rank"]), font=card_font(40, True), fill=medal.get(r["rank"], CARD_MUTED))
-        name = fit_text(d, r["name"], card_font(40, True), 470)
-        d.text((CARD_PAD + 90, y + 18), name, font=card_font(40, True), fill=CARD_TEXT)
-        if r["hurt"]:  # a small red cross after the name
-            cx, cy = CARD_PAD + 90 + d.textlength(name, font=card_font(40, True)) + 22, y + 42
-            d.rectangle([cx - 3, cy - 10, cx + 3, cy + 10], fill=(209, 73, 91))
-            d.rectangle([cx - 10, cy - 3, cx + 10, cy + 3], fill=(209, 73, 91))
+        d.text((CARD_PAD, y + 16), str(r["rank"]), font=card_font(36), fill=CARD_MUTED)
+        name = fit_text(d, r["name"], card_font(36, True), 470)
+        d.text((CARD_PAD + 130, y + 16), name, font=card_font(36, True), fill=CARD_TEXT)
+        if r["hurt"]:  # a small grey cross after the name
+            cx, cy = CARD_PAD + 130 + d.textlength(name, font=card_font(36, True)) + 20, y + 40
+            d.rectangle([cx - 2, cy - 8, cx + 2, cy + 8], fill=CARD_MUTED)
+            d.rectangle([cx - 8, cy - 2, cx + 8, cy + 2], fill=CARD_MUTED)
         rate = str(r["rating"])
-        d.text((CARD_W - CARD_PAD - 230 - d.textlength(rate, font=card_font(40, True)), y + 18), rate, font=card_font(40, True), fill=CARD_ACCENT)
+        d.text((rate_x - d.textlength(rate, font=card_font(36, True)), y + 16), rate, font=card_font(36, True), fill=CARD_TEXT)
         rec = f"{r['w']}-{r['l']}"
-        d.text((CARD_W - CARD_PAD - d.textlength(rec, font=card_font(36)), y + 22), rec, font=card_font(36), fill=CARD_MUTED)
-        y += 84
+        d.text((rec_x - d.textlength(rec, font=card_font(36)), y + 16), rec, font=card_font(36), fill=CARD_MUTED)
+        y += 80
+    d.line([CARD_PAD, y, CARD_W - CARD_PAD, y], fill=CARD_LINE, width=2)
     card_footer(d, H)
     return card_bytes(img)
 
@@ -1120,24 +1140,137 @@ def new_team_names():
     """A colour plus a squash pun, e.g. Blue Lobsters, Red Tin Bashers, White Drop Shots."""
     return [f"{c} {n}" for c, n in zip(TEAM_COLOUR_NAMES, random.sample(TEAM_NOUNS, 3))]
 
-def draw_teams(captains, pool, rate, balanced):
-    """Split six players into three pairs, one pair per captain.
-    Random: a plain shuffle. Balanced: tries every split and picks (at random) one of the five that leave the three
-    teams closest in combined adjusted rating, so drawing again still gives a different result."""
+def draw_teams(captains, pool, rate, balanced, k):
+    """Split the pool into three groups of k players, one group per captain.
+    Random: a plain shuffle. Balanced: tries thousands of splits and picks (at random) one of the five that leave the
+    three teams closest in combined adjusted rating, so drawing again still gives a different result."""
     pool = list(pool)
     if not balanced:
         random.shuffle(pool)
-        return [pool[0:2], pool[2:4], pool[4:6]]
-    options = []
-    for first in itertools.combinations(pool, 2):
-        rest = [p for p in pool if p not in first]
-        for second in itertools.combinations(rest, 2):
-            third = tuple(p for p in rest if p not in second)
-            split = [list(first), list(second), list(third)]
-            totals = [rate[c] + sum(rate[p] for p in sp) for c, sp in zip(captains, split)]
-            options.append((max(totals) - min(totals), split))
-    options.sort(key=lambda o: o[0])
-    return random.choice(options[:5])[1]
+        return [pool[i * k:(i + 1) * k] for i in range(3)]
+    spread = {}
+    for _ in range(4000):
+        random.shuffle(pool)
+        split = tuple(tuple(sorted(pool[i * k:(i + 1) * k])) for i in range(3))
+        totals = [rate[c] + sum(rate[p] for p in sp) for c, sp in zip(captains, split)]
+        spread[split] = max(totals) - min(totals)
+    best = sorted(spread, key=spread.get)[:5]
+    return [list(sp) for sp in random.choice(best)]
+
+def tourney_save_game(r, x, y):
+    """Record one tournament game as a normal match: it goes into Match History and changes the ratings.
+    x is r['p1']'s score and y is r['p2']'s. Entering a game that already exists updates that match."""
+    m = next((m for m in matches if m.get("tour") == r["id"]), None)
+    bonus = shutout_bonus(x, y)
+    if m:
+        m.update(p1=r["p1"], p2=r["p2"], score=[x, y], bonus=bonus)
+        recompute(players, matches)
+    else:
+        r1, r2 = players[r["p1"]], players[r["p2"]]
+        n1, n2 = play(r1, r2, x, y, bonus)
+        players[r["p1"]], players[r["p2"]] = n1, n2
+        m = {"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "p1": r["p1"], "p2": r["p2"], "score": [x, y],
+             "winner": r["p1"] if x > y else r["p2"], "bonus": bonus,
+             "p1_before": r1, "p1_after": n1, "p2_before": r2, "p2_after": n2, "tour": r["id"]}
+        matches.append(m)
+    r["score"], r["linked"] = [x, y], True
+    return m
+
+def sync_tournaments():
+    """The matches are the truth: a tournament game's score is read from its match, so editing or deleting that match in
+    Match History is reflected in the tournament too."""
+    by = {m["tour"]: m for m in matches if m.get("tour")}
+    for t in tournaments:
+        for r in t["results"]:
+            m = by.get(r["id"])
+            if m and {m["p1"], m["p2"]} == {r["p1"], r["p2"]}:
+                r["score"] = m["score"] if m["p1"] == r["p1"] else m["score"][::-1]
+            elif r.get("linked"):
+                r["score"] = None
+
+def tdlg_pick(n):
+    st.session_state.t_tap = n
+
+@st.dialog("Enter Score")
+def score_dialog(t, e):
+    """Step 1 asks for the first player's score, step 2 for the second's. Each step is its own pop-up."""
+    r = next(x for x in t["results"] if x["id"] == e["rid"])
+    first, second = e["first"], e["second"]
+    who, other = (first, second) if e["step"] == 1 else (second, first)
+    st.markdown(f"### {who}")
+    st.markdown(f"vs {other}" + (f"  |  {first} scored {e['s1']}" if e["step"] == 2 else ""))
+    button_grid("grid_ts1", [(str(n), f"tdlg{e['step']}_{n}", False, tdlg_pick, (n,)) for n in range(12)])
+    n = st.session_state.pop("t_tap", None)
+    if n is None:
+        return
+    if e["step"] == 1:
+        e["s1"], e["step"] = n, 2
+        st.session_state.t_open = True
+        st.rerun()
+    a, b = e["s1"], n
+    if not valid_tourney_game(a, b):
+        st.error(f"{a}-{b} isn't valid. Games go to 11, and at 10-10 the next point wins (11-10).")
+        return
+    x, y = (a, b) if r["p1"] == first else (b, a)
+    m = tourney_save_game(r, x, y)
+    save(data, sha, f"Tournament: {first} {a}-{b} {second}")
+    st.session_state.pop("t_entry", None)
+    st.session_state.flash = (f"Saved {first} {a}-{b} {second}.  {m['p1']}: {m['p1_before']:.0f} → {m['p1_after']:.0f}"
+                              f"  |  {m['p2']}: {m['p2_before']:.0f} → {m['p2_after']:.0f}")
+    st.rerun()
+
+def tournament_table(t, interactive):
+    """Everyone against everyone. Read along a row for that player's score against each opponent (green = won the game,
+    red = lost it, stronger colour = bigger margin). When interactive, tap a cell to enter that game."""
+    names = [p for tm in t["teams"] for p in tm["players"]]
+    codes, cols = short_codes(names), []
+    for p in names:
+        c = codes[p]
+        while c in cols:
+            c += "'"
+        cols.append(c)
+    team = {p: i for i, tm in enumerate(t["teams"]) for p in tm["players"]}
+    look = {}
+    for r in t["results"]:
+        if r["score"] is not None:
+            a, b = r["score"]
+            look[(r["p1"], r["p2"])], look[(r["p2"], r["p1"])] = (a, b), (b, a)
+    todo = "+" if interactive else "·"
+    cell = lambda p, q: "" if team[p] == team[q] else (f"{look[(p, q)][0]}-{look[(p, q)][1]}" if (p, q) in look else todo)
+    df = pd.DataFrame([[cell(p, q) for q in names] for p in names], index=names, columns=cols)
+
+    def paint(frame):
+        css = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        for p in names:
+            for q, c in zip(names, cols):
+                if team[p] == team[q]:
+                    css.loc[p, c] = "background-color: rgba(128,128,128,0.15);"
+                elif (p, q) in look:
+                    a, b = look[(p, q)]
+                    css.loc[p, c] = f"background-color: rgba({'42,157,143' if a > b else '209,73,91'},{0.15 + 0.6 * abs(a - b) / 11:.2f});"
+        return css
+
+    st.subheader("Games")
+    kw = dict(height=35 * (len(names) + 1) + 3, column_config={c: st.column_config.TextColumn(c, width="small") for c in cols})
+    styled = df.style.apply(paint, axis=None)
+    if not interactive:
+        st.dataframe(styled, **kw)
+        return
+    ver = st.session_state.get("t_tbl_ver", 0)
+    ev = st.dataframe(styled, key=f"t_tbl_{ver}", on_select="rerun", selection_mode="single-cell", **kw)
+    if ev.selection.cells:
+        ri, ci = ev.selection.cells[0]
+        ci = cols.index(ci) if isinstance(ci, str) else ci
+        st.session_state.t_tbl_ver = ver + 1  # a fresh table, so the same cell can be tapped again
+        p, q = names[ri], names[ci]
+        if team[p] != team[q]:
+            r = next(x for x in t["results"] if {x["p1"], x["p2"]} == {p, q})
+            st.session_state.t_entry = {"tid": t["id"], "rid": r["id"], "first": p, "second": q, "step": 1, "s1": None}
+            st.session_state.t_open = True
+        st.rerun()
+    e = st.session_state.get("t_entry")
+    if e and e["tid"] == t["id"] and st.session_state.pop("t_open", False):
+        score_dialog(t, e)
 
 def make_fixtures(teams):
     """Every player plays every player on the other two teams: 9 games per pairing, 27 games in total."""
@@ -1217,44 +1350,6 @@ def tug_html(t):
             f'<div style="flex:1;background:{TEAM_FILL[j]};"></div></div></div>')
     return "".join(out)
 
-def crosstable_html(t):
-    """Everyone against everyone in one grid. Read along a row: that player's score against each opponent.
-    Green = they won the game, red = they lost it, and the stronger the colour the bigger the margin."""
-    names = [p for tm in t["teams"] for p in tm["players"]]
-    codes = short_codes(names)
-    team = {p: i for i, tm in enumerate(t["teams"]) for p in tm["players"]}
-    first = {tm["players"][0] for tm in t["teams"]}
-    look = {}
-    for r in t["results"]:
-        if r["score"] is not None:
-            a, b = r["score"]
-            look[(r["p1"], r["p2"])], look[(r["p2"], r["p1"])] = (a, b), (b, a)
-    line = "2px solid rgba(128,128,128,0.5)"
-    dot = lambda p: (f'<span style="display:inline-flex;vertical-align:middle;width:22px;height:22px;border-radius:50%;'
-                     f'background:{TEAM_FILL[team[p]]};color:{TEAM_INK[team[p]]};box-shadow:inset 0 0 0 1px rgba(128,128,128,0.45);'
-                     f'font-size:9px;font-weight:700;align-items:center;justify-content:center;">{codes[p]}</span>')
-    left = lambda q: f"border-left:{line};" if q in first and team[q] else ""
-    head = "<tr><td></td>" + "".join(f'<td style="padding:4px 0;text-align:center;{left(q)}">{dot(q)}</td>' for q in names) + "</tr>"
-    body = []
-    for p in names:
-        cells = []
-        for q in names:
-            css = f"padding:7px 3px;text-align:center;white-space:nowrap;font-size:0.78rem;font-variant-numeric:tabular-nums;{left(q)}"
-            if team[p] == team[q]:
-                cells.append(f'<td style="{css}background:rgba(128,128,128,0.12);"></td>')
-            elif (p, q) in look:
-                a, b = look[(p, q)]
-                al = 0.2 + 0.7 * abs(a - b) / 11
-                cells.append(f'<td style="{css}background:rgba({"42,157,143" if a > b else "209,73,91"},{al:.2f});'
-                             f'{"color:#fff;" if al > 0.55 else ""}">{a}-{b}</td>')
-            else:
-                cells.append(f'<td style="{css}opacity:0.4;">·</td>')
-        row_top = f"border-top:{line};" if p in first and team[p] else ""
-        body.append(f'<tr style="{row_top}"><td style="padding:4px 10px 4px 6px;white-space:nowrap;'
-                    f'border-left:4px solid {TEAM_EDGE[team[p]]};">{dot(p)}<span style="margin-left:6px;vertical-align:middle;">'
-                    f'{html.escape(p)}</span></td>' + "".join(cells) + "</tr>")
-    return f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;">{head}{"".join(body)}</table></div>'
-
 def toggle_pool(name):
     """Tap a player to include them in the tournament, tap again to remove. A seventh pick drops the earliest."""
     sel = st.session_state.get("t_pool", [])
@@ -1312,46 +1407,6 @@ def tournament_setup():
             st.session_state.flash = f"Started {name.strip() or 'Tournament'}. 27 games to play."
             st.rerun()
 
-@st.fragment
-def tournament_entry(t):
-    st.subheader("Enter A Result")
-    res = t["results"]
-    todo = [k for k, r in enumerate(res) if r["score"] is None]
-    label = lambda k: f'{res[k]["p1"]} vs {res[k]["p2"]}  |  ' + (f'{res[k]["score"][0]}-{res[k]["score"][1]}' if res[k]["score"] else "to play")
-    # no key on purpose: after a save the list changes, so the dropdown moves on to the next game still to play
-    k = pick(st, "Game", list(range(len(res))), index=todo[0] if todo else 0, format_func=label, label_visibility="collapsed")
-    r = res[k]
-    if st.session_state.get("t_cur") != r["id"]:  # a different game was picked: start from its saved score (if any)
-        st.session_state.t_cur = r["id"]
-        st.session_state.t_s1, st.session_state.t_s2 = r["score"] if r["score"] else (None, None)
-    s1, s2 = st.session_state.get("t_s1"), st.session_state.get("t_s2")
-    st.markdown(f"**{r['p1']} Score**")
-    button_grid("grid_ts1", [(str(n), f"tsc1_{n}", s1 == n, set_score, ("t_s1", n)) for n in range(12)])
-    st.markdown(f"**{r['p2']} Score**")
-    button_grid("grid_ts2", [(str(n), f"tsc2_{n}", s2 == n, set_score, ("t_s2", n)) for n in range(12)])
-    st.markdown(f"### {r['p1']} {'-' if s1 is None else s1}  :  {'-' if s2 is None else s2} {r['p2']}")
-    with st.container(key="grid_tbtns"):
-        c1, c2 = st.columns(2)
-        save_it = wide_button(c1, "Save Result", key="t_save", type="primary")
-        clear_it = wide_button(c2, "Clear Result", key="t_clear", disabled=r["score"] is None)
-    if save_it:
-        if s1 is None or s2 is None:
-            st.error("Tap a score for both players.")
-        elif not valid_tourney_game(s1, s2):
-            st.error(f"{s1}-{s2} isn't valid. Tournament games go to 11, and at 10-10 the next point wins (11-10).")
-        else:
-            r["score"] = [s1, s2]
-            save(data, sha, f"Tournament: {r['p1']} {s1}-{s2} {r['p2']}")
-            st.session_state.t_cur = None
-            st.session_state.flash = f"Saved {r['p1']} {s1}-{s2} {r['p2']}."
-            st.rerun()
-    elif clear_it:
-        r["score"] = None
-        save(data, sha, f"Tournament: clear {r['p1']} vs {r['p2']}")
-        st.session_state.t_cur = None
-        st.session_state.flash = f"Cleared {r['p1']} vs {r['p2']}."
-        st.rerun()
-
 def tournament_view(t, order):
     played_n, total_n = sum(r["score"] is not None for r in t["results"]), len(t["results"])
     st.subheader(t["name"])
@@ -1365,14 +1420,14 @@ def tournament_view(t, order):
         st.success(f"{order[0]['name']} win with {order[0]['f']} points." if order[0]["f"] > order[1]["f"]
                    else "The top teams finished level on points.")
 
-def tournament_details(t, per):
+def tournament_details(t, per, interactive):
     teams = {p: tm["name"] for tm in t["teams"] for p in tm["players"]}
     rows = sorted(({"Player": p, "Team": teams[p], "Played": d["g"], "Won": d["w"], "Lost": d["g"] - d["w"],
                     "Pts For": d["f"], "Pts Against": d["a"], "Diff": d["f"] - d["a"]} for p, d in per.items()),
                   key=lambda x: (-x["Pts For"], -x["Diff"], x["Player"]))
     st.subheader("Team Vs Team")
     st.markdown(tug_html(t), unsafe_allow_html=True)
-    st.markdown(crosstable_html(t), unsafe_allow_html=True)
+    tournament_table(t, interactive)
     st.subheader("Players")
     st.dataframe(pd.DataFrame(rows), hide_index=True, height=35 * (len(rows) + 1) + 3,
                  column_config={"Diff": st.column_config.NumberColumn("Diff", format="%+d")})
@@ -1392,7 +1447,10 @@ def tournament_manage(t, order):
             save(data, sha, f"Reopen tournament {t['name']}")
             st.session_state.flash = f"{t['name']} is open again."
             st.rerun()
-        if st.checkbox("I Want To Delete This Tournament", key=f"t_del_ok_{t['id']}") and st.button("Delete Tournament", key="t_delete"):
+        if st.checkbox("I Want To Delete This Tournament And Its Games", key=f"t_del_ok_{t['id']}") and st.button("Delete Tournament", key="t_delete"):
+            ids = {r["id"] for r in t["results"]}
+            matches[:] = [m for m in matches if m.get("tour") not in ids]
+            recompute(players, matches)
             tournaments.remove(t)
             save(data, sha, f"Delete tournament {t['name']}")
             st.session_state.flash = "Tournament deleted."
@@ -1405,8 +1463,9 @@ st.title("Squash Elo")
 data, sha = load()
 players, matches = data["players"], data["matches"]
 injured = data.setdefault("injured", [])  # players who are out injured: not eligible for tournaments
-tournaments = data.setdefault("tournaments", [])  # monthly team tournaments (kept separate from the Elo ratings)
+tournaments = data.setdefault("tournaments", [])  # monthly team tournaments; their games are normal matches too
 pending = data.setdefault("pending", [])  # results waiting for approval: they change nothing until approved
+sync_tournaments()
 authed = st.session_state.get("auth", False)
 
 with st.expander("Logged In" if authed else "Login (Needed To Edit)"):
@@ -1675,7 +1734,7 @@ elif page == "Match History":
                 if save_clicked:
                     if e1 == e2:
                         st.error("Pick two different players.")
-                    elif not valid_game(s1, s2):
+                    elif not (valid_game(s1, s2) or (m.get("tour") and valid_tourney_game(s1, s2))):
                         st.error(f"{s1}-{s2} isn't valid. {SCORE_RULES}")
                     else:
                         m.update(p1=e1, p2=e2, score=[s1, s2], bonus=shutout_bonus(s1, s2))
@@ -1791,9 +1850,7 @@ elif page == "Tournament":
             shown = choices[k]
         per, order = tourney_stats(shown)
         tournament_view(shown, order)
-        if authed and shown["status"] == "active":
-            tournament_entry(shown)
-        tournament_details(shown, per)
+        tournament_details(shown, per, authed and shown["status"] == "active")
         with st.expander("Share Card"):
             png = tournament_card(shown, order)
             st.image(png)
