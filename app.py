@@ -326,7 +326,7 @@ def awards_html(cards, everyone=False, reveal=True):
                 f'<div style="font-weight:700;font-size:0.95rem;opacity:0.75;">{html.escape(title)}</div>{arrow}</div>'
                 '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
                 f'<div style="font-weight:700;font-size:1.4rem;">{who}</div>'
-                f'<div style="font-weight:700;font-size:1.2rem;color:#2a9d8f;white-space:nowrap;">{html.escape(stat)}</div></div>')
+                f'<div style="font-weight:700;font-size:1.2rem;color:#3fb950;white-space:nowrap;">{html.escape(stat)}</div></div>')
         if not reveal:  # just the stat's name and what it measures: names only appear once a card is opened
             head = ('<div style="display:flex;justify-content:space-between;align-items:center;">'
                     f'<div style="font-weight:700;font-size:1.15rem;">{html.escape(title)}</div>{arrow}</div>'
@@ -340,7 +340,7 @@ def awards_html(cards, everyone=False, reveal=True):
             f'{"opacity:0.55;" if r[2] is None else ""}">'
             f'<div style="font-size:1.05rem;"><span style="display:inline-block;min-width:2.8em;opacity:0.6;">'
             f'{ordinal(r[2]) if r[2] else "-"}</span>{html.escape(r[0])}</div>'
-            f'<div style="font-size:1rem;color:#2a9d8f;white-space:nowrap;">{html.escape(r[1])}</div></div>'
+            f'<div style="font-size:1rem;color:#3fb950;white-space:nowrap;">{html.escape(r[1])}</div></div>'
             for r in extra)
         out.append(f'<details class="aw" style="{box}"><summary>{head}</summary>{more}</details>')
     st.markdown("".join(out), unsafe_allow_html=True)
@@ -356,8 +356,7 @@ RACE_ROW_H = 46
 RACE_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{--fg:#31333f;--line:rgba(128,128,128,.4);--accent:#ff4b4b;--dur:0ms}
-@media (prefers-color-scheme:dark){:root{--fg:#fafafa}}
+:root{--fg:#e6edf3;--line:#30363d;--accent:#238636;--dur:0ms}
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;overflow:hidden;background:transparent;color:var(--fg);
  font-family:"Source Sans Pro","Source Sans 3",-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:15px}
@@ -662,7 +661,7 @@ def view_bars(cards):
                    f'<div style="display:flex;align-items:baseline;min-width:0;"><span style="width:22px;text-align:right;margin-right:8px;'
                    f'font-weight:700;opacity:0.65;flex:none;">{pl if pl else "-"}</span>'
                    f'<span style="font-weight:600;">{html.escape(p)}</span></div>'
-                   f'<div style="font-weight:700;color:#2a9d8f;flex:none;">{html.escape(text)}</div></div>{bar}</div>')
+                   f'<div style="font-weight:700;color:#3fb950;flex:none;">{html.escape(text)}</div></div>{bar}</div>')
     st.markdown("".join(out), unsafe_allow_html=True)
 
 
@@ -737,7 +736,7 @@ def view_heatmap(cards):
             for p in frame.index:
                 g = good.get(k, {}).get(p)
                 if g is not None:
-                    css.loc[p, k] = f"background-color: rgba(42,157,143,{0.10 + 0.75 * g:.2f});" + ("color: #ffffff;" if g > 0.6 else "")
+                    css.loc[p, k] = f"background-color: rgba(46,160,67,{0.10 + 0.75 * g:.2f});" + ("color: #ffffff;" if g > 0.6 else "")
         return css
     cfg = {stat_meta(t)["short"]: st.column_config.NumberColumn(stat_meta(t)["short"], help=t, format=stat_meta(t)["fmt"])
            for t, _, _ in cards}
@@ -902,7 +901,7 @@ def compare_table(a, b, rows):
            f'<div style="{name_css}">{html.escape(a)}</div><div></div>',
            f'<div style="{name_css}">{html.escape(b)}</div>']
     for label, (sa, na), (sb, nb) in rows:
-        win = "font-weight:700;color:#2a9d8f;"
+        win = "font-weight:700;color:#3fb950;"
         out.append(f'<div style="{line}font-size:1.5rem;{win if na > nb else ""}">{sa}</div>'
                    f'<div style="{line}font-size:0.85rem;opacity:0.7;padding:8px 14px;">{html.escape(label)}</div>'
                    f'<div style="{line}font-size:1.5rem;{win if nb > na else ""}">{sb}</div>')
@@ -975,9 +974,9 @@ def admin_tools():
 
 
 # ---------- share cards ----------
-# Plain white, the app's own text and grey, and the teal accent. Nothing else except the podium medal lines.
-CARD_BG, CARD_TEXT, CARD_MUTED = (255, 255, 255), (49, 51, 63), (128, 128, 128)
-CARD_LINE, CARD_ACCENT, CARD_BLOCK = (230, 230, 230), (42, 157, 143), (246, 246, 247)
+# GitHub's dark look: near-black page, soft white text, grey lines and one green accent. Nothing else except the podium medal lines.
+CARD_BG, CARD_TEXT, CARD_MUTED = (13, 17, 23), (230, 237, 243), (139, 148, 158)
+CARD_LINE, CARD_ACCENT, CARD_BLOCK = (48, 54, 61), (63, 185, 80), (22, 27, 34)
 CARD_MEDAL = [(212, 175, 55), (170, 170, 180), (205, 127, 50)]  # gold, silver, bronze
 CARD_W, CARD_PAD = 1080, 70
 
@@ -1015,6 +1014,7 @@ def wrap_text(d, text, font, width):
     return lines + ([cur] if cur else [])
 
 def card_bytes(img):
+    ImageDraw.Draw(img).rectangle([0, 0, img.width - 1, img.height - 1], outline=CARD_LINE, width=2)
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -1127,9 +1127,9 @@ def adjusted_ranking():
     rate = {p: final.get(p, players[p]) for p in players}
     return sorted(players, key=lambda p: (-rate[p], p)), rate
 
-TEAM_FILL = ["#2563eb", "#dc2626", "#f3f4f6"]  # blue, red, white (team 1 is captained by the top-ranked player, and so on)
-TEAM_EDGE = ["#2563eb", "#dc2626", "#b8bec8"]
-TEAM_INK = ["#ffffff", "#ffffff", "#374151"]
+TEAM_FILL = ["#1f6feb", "#da3633", "#e6edf3"]  # blue, red, white (team 1 is captained by the top-ranked player, and so on)
+TEAM_EDGE = ["#1f6feb", "#da3633", "#8b949e"]
+TEAM_INK = ["#ffffff", "#ffffff", "#0d1117"]
 TEAM_COLOUR_NAMES = ["Blue", "Red", "White"]
 TEAM_NOUNS = ["Lobsters", "Tin Bashers", "Drop Shots", "Boasters", "Rail Riders", "Wall Huggers", "Let Merchants",
               "Nick Pickers", "Ghosters", "Dive Bombers", "Corner Crawlers", "Sudden Deaths", "Back Wall Bandits",
@@ -1247,7 +1247,7 @@ def tournament_table(t, interactive):
                     css.loc[p, c] = "background-color: rgba(128,128,128,0.15);"
                 elif (p, q) in look:
                     a, b = look[(p, q)]
-                    css.loc[p, c] = f"background-color: rgba({'42,157,143' if a > b else '209,73,91'},{0.15 + 0.6 * abs(a - b) / 11:.2f});"
+                    css.loc[p, c] = f"background-color: rgba({'46,160,67' if a > b else '248,81,73'},{0.15 + 0.6 * abs(a - b) / 11:.2f});"
         return css
 
     st.subheader("Games")
@@ -1314,7 +1314,7 @@ def scoreboard_html(order):
             '<div style="display:flex;align-items:baseline;min-width:0;">'
             f'<span style="width:22px;text-align:right;margin-right:8px;font-weight:700;opacity:0.65;flex:none;">{i}</span>'
             f'<span style="font-weight:700;font-size:1.4rem;">{html.escape(tm["name"])}</span></div>'
-            f'<div style="font-weight:700;font-size:1.6rem;color:#2a9d8f;white-space:nowrap;">{tm["f"]} '
+            f'<div style="font-weight:700;font-size:1.6rem;color:#3fb950;white-space:nowrap;">{tm["f"]} '
             '<span style="font-size:0.9rem;opacity:0.7;">pts</span></div></div>'
             '<div style="height:10px;margin:6px 0 0 30px;border-radius:5px;background:rgba(128,128,128,0.16);">'
             f'<div style="height:100%;width:{max(3, 100 * tm["f"] / top):.1f}%;border-radius:5px;'
@@ -1337,7 +1337,7 @@ def tug_html(t):
     for (i, j), (fa, fb) in pts.items():
         A, B = t["teams"][i], t["teams"][j]
         share = 50 if fa + fb == 0 else 100 * fa / (fa + fb)
-        lead = lambda x, y: "font-weight:700;color:#2a9d8f;" if x > y else ""
+        lead = lambda x, y: "font-weight:700;color:#3fb950;" if x > y else ""
         out.append(
             '<div style="margin:14px 0 20px;">'
             '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">'
@@ -1351,60 +1351,70 @@ def tug_html(t):
     return "".join(out)
 
 def toggle_pool(name):
-    """Tap a player to include them in the tournament, tap again to remove. A seventh pick drops the earliest."""
+    """Tap a player to include them in the tournament, tap again to remove. One pick too many drops the earliest."""
+    need = 3 * (st.session_state.get("t_size", 3) - 1)
     sel = st.session_state.get("t_pool", [])
-    st.session_state.t_pool = [p for p in sel if p != name] if name in sel else (sel + [name])[-6:]
+    st.session_state.t_pool = [p for p in sel if p != name] if name in sel else (sel + [name])[-need:]
 
 @st.fragment
 def tournament_setup():
     ranking, rate = adjusted_ranking()
     out = [p for p in ranking if p in injured]
     ranking = [p for p in ranking if p not in injured]  # injured players can't be captains or play
-    if len(ranking) < 9:
-        st.info("A tournament needs at least 9 healthy players (3 captains plus 6 more).")
+    if len(ranking) < 6:
+        st.info("A tournament needs at least 6 healthy players.")
         return
+    sizes = list(range(2, min(6, len(ranking) // 3) + 1))
+    size = st.session_state.get("t_size", 3)
+    size = size if size in sizes else sizes[-1]
+    st.session_state.t_size = size
+    k = size - 1
+    need = 3 * k
     captains, others = ranking[:3], ranking[3:]
-    sel = [p for p in st.session_state.get("t_pool", others[:6]) if p in others]
+    sel = [p for p in st.session_state.get("t_pool", others[:need]) if p in others][:need]
     st.session_state.t_pool = sel
     st.subheader("Set Up A Tournament")
     if out:
         st.caption("Out injured: " + ", ".join(out))
+    st.markdown("**Players Per Team**")
+    button_grid("grid_tsize", [(str(n), f"tz_{n}", n == size, set_score, ("t_size", n)) for n in sizes])
     st.markdown("**Captains**")
     st.markdown("\n".join(f"{i}. **{c}** ({rate[c]:.0f})" for i, c in enumerate(captains, 1)))
-    st.markdown("**Tap Six Players**")
+    st.markdown(f"**Tap {need} Players**")
     button_grid("grid_tpool", [(n, f"tp_{n}", n in sel, toggle_pool, (n,)) for n in others])
-    st.caption(f"{len(sel)} of 6 picked")
+    st.caption(f"{len(sel)} of {need} picked")
     with st.container(key="grid_tdraw"):
         c1, c2 = st.columns(2)
         rand = wide_button(c1, "Random Draw", key="t_rand")
         bal = wide_button(c2, "Balanced Draw", key="t_bal")
     if rand or bal:
-        if len(sel) != 6:
-            st.error("Pick exactly six players first.")
+        if len(sel) != need:
+            st.error(f"Pick exactly {need} players first.")
         else:
-            st.session_state.t_draft = {"captains": captains, "split": draw_teams(captains, sel, rate, balanced=bool(bal)),
+            st.session_state.t_draft = {"captains": captains, "split": draw_teams(captains, sel, rate, bool(bal), k),
                                         "names": new_team_names()}
     draft = st.session_state.get("t_draft")
-    if draft and (draft["captains"] != captains or sorted(sum(draft["split"], [])) != sorted(sel)):
-        draft = None  # the picks or the captains have changed since the draw
+    if draft and (draft["captains"] != captains or len(draft["split"][0]) != k or sorted(sum(draft["split"], [])) != sorted(sel)):
+        draft = None  # the picks, the team size or the captains have changed since the draw
     if draft:
         labels = draft["names"]
         st.markdown("**The Teams**")
         for nm, c, sp in zip(labels, captains, draft["split"]):
-            st.markdown(f"**{nm}**  \n{c} (C), {sp[0]}, {sp[1]}  \nCombined rating {rate[c] + rate[sp[0]] + rate[sp[1]]:.0f}")
+            st.markdown(f"**{nm}**  \n{c} (C), {', '.join(sp)}  \nCombined rating {rate[c] + sum(rate[p] for p in sp):.0f}")
         if st.button("New Team Names", key="t_names"):
             draft["names"] = new_team_names()
             st.rerun(scope="fragment")
         name = st.text_input("Tournament Name", value=f"Tournament {datetime.now().strftime('%B %Y')}", key="t_name")
         if st.button("Start Tournament", type="primary", key="t_start"):
             teams = [{"name": nm, "captain": c, "players": [c] + sp} for nm, c, sp in zip(labels, captains, draft["split"])]
+            fixtures = make_fixtures(teams)
             tournaments.append({"id": uuid.uuid4().hex[:8], "name": name.strip() or "Tournament",
-                                "date": datetime.now().strftime("%Y-%m-%d"), "status": "active",
-                                "teams": teams, "results": make_fixtures(teams)})
+                                "date": datetime.now().strftime("%Y-%m-%d"), "status": "active", "size": size,
+                                "teams": teams, "results": fixtures})
             save(data, sha, f"Start tournament {name.strip()}")
             st.session_state.pop("t_draft", None)
             st.session_state.pop("t_pool", None)
-            st.session_state.flash = f"Started {name.strip() or 'Tournament'}. 27 games to play."
+            st.session_state.flash = f"Started {name.strip() or 'Tournament'}. {len(fixtures)} games to play."
             st.rerun()
 
 def tournament_view(t, order):
@@ -1497,11 +1507,11 @@ if authed and pending:
 # (which remembers the selection) styled with CSS to look like normal tabs.
 st.markdown("""
 <style>
-:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] { gap: 0; flex-wrap: wrap; border-bottom: 1px solid rgba(128,128,128,0.35); }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] { gap: 0; flex-wrap: wrap; border-bottom: 1px solid #30363d; }
 :is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label { padding: 8px 14px; margin: 0; cursor: pointer; border-bottom: 2px solid transparent; }
 :is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label > div:first-child { display: none; }
-:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #ff4b4b; }
-:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) p { color: #ff4b4b; font-weight: 600; }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #f78166; }
+:is(.st-key-page, .st-key-stats_view) div[role="radiogroup"] label:has(input:checked) p { font-weight: 600; }
 /* hide the little hover toolbar (download CSV, fullscreen, search) on tables and graphs */
 [data-testid="stElementToolbar"], [data-testid="stDataFrameToolbar"], .vega-embed details, .vega-embed summary { display: none !important; }
 /* pull the title up closer to the top bar */
@@ -1773,10 +1783,10 @@ elif page == "Player History":
             badges = "".join(
                 '<span style="display:inline-block;width:2rem;height:2rem;line-height:2rem;text-align:center;'
                 'border-radius:6px;font-weight:700;color:#fff;'
-                f'background:{"#2a9d8f" if h["Result"] == "Win" else "#d1495b"};">{h["Result"][0]}</span>'
+                f'background:{"#238636" if h["Result"] == "Win" else "#da3633"};">{h["Result"][0]}</span>'
                 for h in hist[-5:])
             st.markdown('<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:20px;">'
-                        f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest)<span style="color:#d1495b;font-size:0.7rem;margin-left:6px;">{"✚" if name in injured else ""}</span></div>'
+                        f'<div><div style="font-size:0.875rem;opacity:0.65;">{"Adjusted Rating" if adjusted_on else "Current Rating"} (Highest)<span style="color:#f85149;font-size:0.7rem;margin-left:6px;">{"✚" if name in injured else ""}</span></div>'
                         f'<div style="font-size:2.25rem;line-height:1.2;">{round(ratings[-1])} '
                         f'<span style="font-size:1.3rem;opacity:0.6;">({round(max(ratings))})</span></div></div>'
                         f'<div style="display:flex;gap:6px;padding-bottom:6px;">{badges}</div></div>', unsafe_allow_html=True)
